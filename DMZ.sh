@@ -284,6 +284,21 @@ for i in $(seq 1 20); do
 done
 log_ok "Seeded initial dummy logs (>=1KB)"
 
+
+# =========================
+# Ensure host bind directory exists for Postgres
+# =========================
+log_info "Checking host directory for Postgres data volume..."
+if [ ! -d "./dbdata" ]; then
+    log_info "Directory './dbdata' does not exist — creating it..."
+    mkdir -p ./dbdata
+    chmod 0755 ./dbdata
+    log_ok "Host directory './dbdata' created"
+else
+    log_ok "Host directory './dbdata' already exists — skipping creation"
+fi
+
+
 # =========================
 # Deploy Containerlab
 # =========================
