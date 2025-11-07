@@ -10,6 +10,10 @@ BLUE="\e[34m"
 YELLOW="\e[33m"
 ENDCOLOR="\e[0m"
 
+log_info()    { echo -e "${BLUE}[ INFO ]${ENDCOLOR} $1"; }
+log_ok()      { echo -e "${GREEN}[  OK  ]${ENDCOLOR} $1"; }
+log_error()   { echo -e "${RED}[ERROR ]${ENDCOLOR} $1"; }
+
 # =========================
 # Variables
 # =========================
@@ -19,29 +23,32 @@ Internal_Client1_ip="192.168.10.10/24"
 Internal_Client2_ip="192.168.10.11/24"
 
 # =========================
-# Helper Function for Output
+# Cleanup old environment
 # =========================
-log_info()    { echo -e "${BLUE}[ INFO ]${ENDCOLOR} $1"; }
-log_ok()      { echo -e "${GREEN}[  OK  ]${ENDCOLOR} $1"; }
-log_error()   { echo -e "${RED}[ERROR ]${ENDCOLOR} $1"; }
+log_info "Cleaning up previous containers and data..."
+
+# Destroy containerlab setup if exists
+sudo containerlab destroy --topo "$file_name" || true
+
+# Remove Docker leftover containers, volumes, networks
+sudo docker container prune -f || true
+sudo docker network prune -f || true
+sudo docker volume prune -f || true
+
+# Remove previous data directories
+sudo rm -rf /tmp/filebeat-simulated-logs /tmp/filebeat-data ./dbdata || true
+
+log_ok "Previous environment cleaned"
 
 # =========================
-# Begin Setup
+# Create topology file
 # =========================
 log_info "Creating topology file: ${file_name}"
-
-if [ -e "$file_name" ]; then
-  log_info "File '${file_name}' already exists — removing old version"
-  rm -f "$file_name"
-fi
-
 cat << 'EOF' > "$file_name"
 name: MaJuVi
-
 mgmt:
   network: mgmt-net
   ipv4-subnet: 172.20.20.0/24
-
 topology:
   nodes:
     # --- Interne Hosts ---
@@ -53,7 +60,6 @@ topology:
       cap-add:
         - NET_ADMIN
         - NET_RAW
-
     Internal_Client1:
       kind: linux
       image: alpine:latest
@@ -61,7 +67,6 @@ topology:
       group: server
       cap-add:
         - NET_ADMIN
-
     Internal_Client2:
       kind: linux
       image: alpine:latest
@@ -69,7 +74,6 @@ topology:
       group: server
       cap-add:
         - NET_ADMIN
-
     Internal_FW:
       kind: linux
       image: frrouting/frr:latest
@@ -81,7 +85,6 @@ topology:
         - NET_ADMIN
         - SYS_MODULE
         - NET_RAW
-
     # --- DMZ Hosts ---
     DMZ_Switch:
       kind: linux
@@ -91,7 +94,6 @@ topology:
       cap-add:
         - NET_ADMIN
         - NET_RAW
-
     Proxy_WAF:
       kind: linux
       image: nginx:latest
@@ -100,7 +102,6 @@ topology:
         - "80:80"
       cap-add:
         - NET_ADMIN
-
     Webserver:
       kind: linux
       image: nginx:alpine
@@ -109,7 +110,6 @@ topology:
         - NET_ADMIN
       env:
         LISTEN_PORT: "8080"
-
     Database:
       kind: linux
       image: postgres:16
@@ -122,7 +122,6 @@ topology:
         - ./dbdata:/var/lib/postgresql/data
       ports:
         - "5432:5432"
-
     IDS:
       kind: linux
       image: jasonish/suricata:latest
@@ -132,7 +131,6 @@ topology:
         - NET_ADMIN
         - NET_RAW
         - SYS_NICE
-
     IDS2:
       kind: linux
       image: jasonish/suricata:latest
@@ -142,7 +140,6 @@ topology:
         - NET_ADMIN
         - NET_RAW
         - SYS_NICE
-
     # --- Filebeat ---
     filebeat:
       kind: linux
@@ -154,7 +151,6 @@ topology:
       cmd: filebeat -e -c /usr/share/filebeat/filebeat.yml
       cap-add:
         - NET_ADMIN
-
     elasticsearch:
       kind: linux
       image: docker.elastic.co/elasticsearch/elasticsearch:8.10.1
@@ -167,7 +163,6 @@ topology:
         - "9200:9200"
       cap-add:
         - NET_ADMIN
-
     kibana:
       kind: linux
       image: docker.elastic.co/kibana/kibana:8.10.1
@@ -179,7 +174,6 @@ topology:
         - "5601:5601"
       cap-add:
         - NET_ADMIN
-
     External_FW:
       kind: linux
       image: frrouting/frr:latest
@@ -189,7 +183,6 @@ topology:
         - NET_ADMIN
         - SYS_MODULE
         - NET_RAW
-
     router-edge:
       kind: linux
       image: frrouting/frr:latest
@@ -198,7 +191,6 @@ topology:
       cap-add:
         - NET_ADMIN
         - NET_RAW
-
     router-internet:
       kind: linux
       image: frrouting/frr:latest
@@ -207,7 +199,6 @@ topology:
       cap-add:
         - NET_ADMIN
         - NET_RAW
-
     Attacker:
       kind: linux
       image: alpine:latest
@@ -215,7 +206,6 @@ topology:
       group: server
       cap-add:
         - NET_ADMIN
-
   links:
     - endpoints: ["Internal_Client1:eth1", "Internal_Switch:eth1"]
     - endpoints: ["Internal_Client2:eth1", "Internal_Switch:eth2"]
@@ -223,9 +213,10 @@ topology:
     - endpoints: ["Internal_FW:eth2", "DMZ_Switch:eth1"]
     - endpoints: ["DMZ_Switch:eth2", "External_FW:eth1"]
     - endpoints: ["Proxy_WAF:eth1", "DMZ_Switch:eth3"]
-    - endpoints: ["Database:eth1", "Webserver:eth2"]
+    - endpoints: ["Database:eth1", "DMZ_Switch:eth4"]
+    - endpoints: ["Database:eth2", "Webserver:eth2"]
     - endpoints: ["Proxy_WAF:eth2", "Webserver:eth1"]
-    - endpoints: ["IDS:eth1", "DMZ_Switch:eth4"]
+    - endpoints: ["IDS:eth1", "DMZ_Switch:eth5"]
     - endpoints: ["IDS:eth2", "filebeat:eth1"]
     - endpoints: ["filebeat:eth2", "elasticsearch:eth1"]
     - endpoints: ["elasticsearch:eth2", "kibana:eth1"]
@@ -238,11 +229,10 @@ topology:
     - endpoints: ["filebeat:eth5", "External_FW:eth3"]
     - endpoints: ["filebeat:eth6", "Proxy_WAF:eth3"]
 EOF
-
 log_ok "Topology file '${file_name}' created successfully"
 
 # =========================
-# Filebeat Config erstellen
+# Filebeat configuration
 # =========================
 log_info "Creating filebeat configuration..."
 cat << EOF > "$filebeat_config"
@@ -254,10 +244,6 @@ filebeat.inputs:
   scan_frequency: 5s
   harvester_limit: 0
 
-# ILM ok with Elasticsearch 8.x (default)
-# If you want to disable ILM uncomment the next line:
-# setup.ilm.enabled: false
-
 output.elasticsearch:
   hosts: ["http://elasticsearch:9200"]
 
@@ -266,45 +252,33 @@ EOF
 log_ok "Filebeat configuration '${filebeat_config}' created"
 
 # =========================
-# Dummy Logs - robust (Permissions)
+# Prepare database directories
 # =========================
-log_info "Preparing /tmp/filebeat-simulated-logs on host (permissions)..."
-sudo rm -rf /tmp/filebeat-simulated-logs || true
+mkdir -p ./dbdata
+sudo chmod 0777 ./dbdata
+
+# =========================
+# Prepare log directories
+# =========================
+log_info "Preparing /tmp/filebeat-simulated-logs..."
 sudo mkdir -p /tmp/filebeat-simulated-logs
-# permissive for lab: both container and host can write
 sudo chmod 0777 /tmp/filebeat-simulated-logs
-# create initial log file with permissive perms
 sudo touch /tmp/filebeat-simulated-logs/test.log
 sudo chmod 0666 /tmp/filebeat-simulated-logs/test.log
-log_ok "Host log directory ready: /tmp/filebeat-simulated-logs"
+log_ok "Host log directory ready"
 
 log_info "Seeding initial dummy logs..."
 for i in $(seq 1 20); do
-  echo "$(date) - Dummy log entry number $i: This is some additional text to increase file size." | sudo tee -a /tmp/filebeat-simulated-logs/test.log >/dev/null
+  echo "$(date) - Dummy log entry number $i" | sudo tee -a /tmp/filebeat-simulated-logs/test.log >/dev/null
 done
-log_ok "Seeded initial dummy logs (>=1KB)"
-
-
-# =========================
-# Ensure host bind directory exists for Postgres
-# =========================
-log_info "Checking host directory for Postgres data volume..."
-if [ ! -d "./dbdata" ]; then
-    log_info "Directory './dbdata' does not exist — creating it..."
-    mkdir -p ./dbdata
-    chmod 0755 ./dbdata
-    log_ok "Host directory './dbdata' created"
-else
-    log_ok "Host directory './dbdata' already exists — skipping creation"
-fi
-
+log_ok "Initial logs seeded"
 
 # =========================
-# Deploy Containerlab
+# Deploy containerlab
 # =========================
-log_info "Starting containerlab deployment..."
+log_info "Deploying containerlab..."
 sudo containerlab deploy --reconfigure --topo "$file_name"
-log_ok "Containerlab deployment completed successfully"
+log_ok "Containerlab deployed"
 
 # =========================
 # Wait for Elasticsearch to be ready
@@ -318,53 +292,40 @@ until sudo docker exec clab-MaJuVi-elasticsearch curl -s http://localhost:9200/_
 done
 log_ok "Elasticsearch cluster reports green"
 
-# =========================
-# Ensure Filebeat can start cleanly
-# =========================
-log_info "Removing potential Filebeat lockfile inside the container..."
-sudo docker exec -it clab-MaJuVi-filebeat rm -f /usr/share/filebeat/data/filebeat.lock || true
-log_ok "Lockfile removed (if present)"
 
-log_info "Starting Filebeat inside container..."
+
+# =========================
+# Start Filebeat
+# =========================
+log_info "Removing possible Filebeat lockfile..."
+sudo docker exec -it clab-MaJuVi-filebeat rm -f /usr/share/filebeat/data/filebeat.lock || true
+
+log_info "Starting Filebeat..."
 sudo docker exec -d clab-MaJuVi-filebeat filebeat -e -c /usr/share/filebeat/filebeat.yml
 log_ok "Filebeat started"
 
 # =========================
-# Continuous Dummy Log Generation inside Filebeat container
+# Continuous dummy log generation inside Filebeat container
 # =========================
-log_info "Starting continuous dummy log generation inside the Filebeat container..."
-# run the generator inside the filebeat container so host/container UID conflicts don't matter
-sudo docker exec -d clab-MaJuVi-filebeat sh -c 'while true; do echo "$(date) - simulated log and i like ananas" >> /tmp/filebeat-simulated-logs/test.log; sleep 5; done'
-log_ok "Continuous generation started inside container"
+log_info "Starting continuous dummy log generation..."
+sudo docker exec -d clab-MaJuVi-filebeat sh -c 'while true; do echo "$(date) - simulated log entry" >> /tmp/filebeat-simulated-logs/test.log; sleep 5; done'
+log_ok "Continuous log generation started"
 
 # =========================
-# Basic final checks
+# Internal Clients
 # =========================
-log_info "Checking if filebeat can talk to Elasticsearch (test output)..."
-sudo docker exec -it clab-MaJuVi-filebeat filebeat test output || true
-
-log_info "Listing indices in Elasticsearch (should show filebeat-*)..."
-sudo docker exec -it clab-MaJuVi-elasticsearch curl -s 'http://localhost:9200/_cat/indices?v' || true
-
-log_ok "Elasticsearch + Kibana SIEM stack is ready. Access Kibana at http://localhost:5601 and create index pattern 'filebeat-*' (time field @timestamp)."
-
-
-log_ok "Elasticsearch + Kibana SIEM stack is ready. Access Kibana at http://localhost:5601 and create index pattern 'filebeat-*' to view logs."
-
-
-log_info "Configurating Internal Clients"
+log_info "Configuring Internal Clients..."
 sudo docker exec -i clab-MaJuVi-Internal_Client1 sh <<EOF
 ip addr add ${Internal_Client1_ip} dev eth1
 ip link set eth1 up
 ip route replace default via 192.168.10.1
 EOF
-
 sudo docker exec -i clab-MaJuVi-Internal_Client2 sh <<EOF
 ip addr add ${Internal_Client2_ip} dev eth1
 ip link set eth1 up
 ip route replace default via 192.168.10.1
 EOF
-log_ok "Internal Clients configerd "
+log_ok "Internal Clients configured"
 
 log_info "Configurating Internal Switch"
 sudo docker exec -i clab-MaJuVi-Internal_Switch sh <<'EOF'
@@ -442,7 +403,7 @@ log_ok "DMZ Switch konfiguriert"
 # Falls nginx noch nicht läuft: ensure container's nginx is running (alpine nginx usually starts on CMD)
 # ps aux | grep nginx
 #EOF
-#echo "Webserver IP gesetzt"
+#echo "Webserver IP gesetzt ✅"
 
 
 
@@ -478,4 +439,5 @@ log_ok "Attacker configured"
 
 
 log_ok "### Lab deployment and configuration completed"
+
 
