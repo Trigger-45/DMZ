@@ -1,0 +1,9 @@
+# Docker setup
+
+# Containerlab setup
+
+# Postgresql setup
+apt install postgresql postgresql-client
+
+# make DMZ.sh runable 
+sudo chmod +x DMZ.sh 
