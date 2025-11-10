@@ -49,6 +49,14 @@ sudo docker run hello-world
 # Containerlab setup
 ##########################################
 
+curl -sL https://containerlab.dev/setup | sudo -E bash -s "all"
+
+####
+# Version check
+####
+
+containerlab version check
+
 ##########################################
 # Postgresql setup
 ##########################################
