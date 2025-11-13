@@ -45,6 +45,137 @@ sudo rm -rf /tmp/filebeat-simulated-logs /tmp/filebeat-data ./dbdata || true
 log_ok "Previous environment cleaned"
 
 # =========================
+# Create Database
+# =========================
+log_info "Creating PostgreSQL initial user table and seed data script..."
+
+mkdir -p ./db-init
+
+cat << 'EOF' > ./db-init/init-users.sql
+CREATE TABLE IF NOT EXISTS users (
+    username VARCHAR(50) PRIMARY KEY,
+    password VARCHAR(255) NOT NULL
+);
+
+INSERT INTO users (username, password) VALUES
+('admin', 'password123'),
+('user', 'mypassword')
+ON CONFLICT (username) DO NOTHING;
+EOF
+
+log_ok "Database initialization SQL created."
+
+# =========================
+# Create Webserver
+# =========================
+log_info "Creating Webserver Flask app and Dockerfile..."
+
+mkdir -p ./webserver-content
+
+cat << 'EOF' > ./webserver-content/app.py
+from flask import Flask, request, render_template_string
+import psycopg2
+import os
+
+app = Flask(__name__)
+
+# DB connection details - use environment variables or defaults
+DB_HOST = os.getenv('DB_HOST', 'Database')
+DB_NAME = os.getenv('DB_NAME', 'mydatabase')
+DB_USER = os.getenv('DB_USER', 'admin_use')
+DB_PASSWORD = os.getenv('DB_PASSWORD', 'strongpassword')
+DB_PORT = 5432
+
+def check_user(username, password):
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cur = conn.cursor()
+        cur.execute('SELECT password FROM users WHERE username = %s', (username,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0] == password:
+            return True
+    except Exception as e:
+        print(f"DB error: {e}")
+    return False
+
+login_form = '''
+<!doctype html>
+<html lang="en">
+<head>
+  <title>Login</title>
+</head>
+<body>
+  <h2>Login Page</h2>
+  {% if error %}
+    <p style="color:red;">{{ error }}</p>
+  {% endif %}
+  <form action="{{ url_for('login') }}" method="post">
+    Username: <input type="text" name="username" required><br/><br/>
+    Password: <input type="password" name="password" required><br/><br/>
+    <input type="submit" value="Login">
+  </form>
+</body>
+</html>
+'''
+
+welcome_page = '''
+<!doctype html>
+<html lang="en">
+<head><title>Welcome</title></head>
+<body>
+  <h2>Welcome, {{ username }}!</h2>
+  <p>You successfully logged in.</p>
+</body>
+</html>
+'''
+
+@app.route('/', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if check_user(username, password):
+            return render_template_string(welcome_page, username=username)
+        else:
+            error = 'Invalid username or password'
+    return render_template_string(login_form, error=error)
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8080)
+EOF
+
+cat << 'EOF' > ./webserver-content/Dockerfile
+FROM python:3.11-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache gcc libc-dev libpq postgresql-dev \
+  && pip install --no-cache-dir flask psycopg2-binary \
+  && apk del gcc libc-dev postgresql-dev
+
+COPY app.py /app/app.py
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
+EOF
+
+log_ok "Webserver Flask app and Dockerfile created."
+
+log_info "Building webserver Docker image...(this may take a couple of minutes)"
+docker build -t simple-login-webserver ./webserver-content
+log_ok "Webserver Docker image built."
+
+# =========================
 # Create topology file
 # (unchanged, benutze deine bestehende Topologie)
 # =========================
@@ -114,12 +245,12 @@ topology:
         - NET_ADMIN
     Webserver:
       kind: linux
-      image: nginx:alpine
+      image: simple-login-webserver
       group: server
+      ports:
+        - "8181:8080"
       cap-add:
         - NET_ADMIN
-      env:
-        LISTEN_PORT: "8080"
     Database:
       kind: linux
       image: postgres:16
@@ -130,8 +261,9 @@ topology:
         POSTGRES_DB: mydatabase
       binds:
         - ./dbdata:/var/lib/postgresql/data
+        - ./db-init:/docker-entrypoint-initdb.d:ro
       ports:
-        - "5432:5432"
+        - "3636:5432"   
     IDS:
       kind: linux
       image: jasonish/suricata:latest
@@ -569,6 +701,25 @@ ip link set eth1 up
 ip route replace default via 10.0.2.1 || true
 EOF
 log_ok "Database configured"
+
+# =========================
+# Webserver config
+# =========================
+log_info "Configuring Webserver"
+sudo docker exec -i clab-MaJuVi-Webserver sh <<'EOF'
+set -e
+if command -v apt >/dev/null 2>&1; then
+  apt update >/dev/null 2>&1 || true
+  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
+elif command -v apk >/dev/null 2>&1; then
+  apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
+fi
+
+ip addr add 10.0.2.30/24 dev eth1 || true
+ip link set eth1 up
+ip route replace default via 10.0.2.1 || true
+EOF
+log_ok "Webserver configured"
 
 # =========================
 # Attacker host config (netzwerkseitig)
