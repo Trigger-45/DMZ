@@ -61,6 +61,38 @@ INSERT INTO users (username, password) VALUES
 ('admin', 'password123'),
 ('user', 'mypassword')
 ON CONFLICT (username) DO NOTHING;
+
+-- Table for storing text files
+CREATE TABLE IF NOT EXISTS files (
+    file_id SERIAL PRIMARY KEY,
+    filename VARCHAR(100) UNIQUE NOT NULL,
+    content TEXT NOT NULL
+);
+
+-- Mapping users to files they can access
+CREATE TABLE IF NOT EXISTS user_file_access (
+    username VARCHAR(50) NOT NULL,
+    file_id INT NOT NULL,
+    PRIMARY KEY (username, file_id),
+    FOREIGN KEY (username) REFERENCES users(username),
+    FOREIGN KEY (file_id) REFERENCES files(file_id)
+);
+
+-- Insert sample files
+INSERT INTO files (filename, content) VALUES
+('file1.txt', 'This is the content of file 1.'),
+('file2.txt', 'This is the content of file 2.')
+ON CONFLICT (filename) DO NOTHING;
+
+-- Map normal user to access only file1.txt (id = 1) 
+-- and admin to access both files
+
+-- First find file_ids (assuming file1.txt = 1, file2.txt = 2)
+INSERT INTO user_file_access (username, file_id) VALUES
+('user', 1),
+('admin', 1),
+('admin', 2)
+ON CONFLICT DO NOTHING;
 EOF
 
 log_ok "Database initialization SQL created."
@@ -73,11 +105,12 @@ log_info "Creating Webserver Flask app and Dockerfile..."
 mkdir -p ./webserver-content
 
 cat << 'EOF' > ./webserver-content/app.py
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, redirect, url_for, session
 import psycopg2
 import os
 
 app = Flask(__name__)
+app.secret_key = "your-secret-key"  # needed for session management
 
 # DB connection details - use environment variables or defaults
 DB_HOST = os.getenv('DB_HOST', 'Database')
@@ -86,15 +119,18 @@ DB_USER = os.getenv('DB_USER', 'admin_use')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'strongpassword')
 DB_PORT = 5432
 
+def get_db_connection():
+    return psycopg2.connect(
+        host=DB_HOST,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT
+    )
+
 def check_user(username, password):
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            port=DB_PORT
-        )
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute('SELECT password FROM users WHERE username = %s', (username,))
         row = cur.fetchone()
@@ -105,6 +141,25 @@ def check_user(username, password):
     except Exception as e:
         print(f"DB error: {e}")
     return False
+
+def get_user_files(username):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT f.filename, f.content
+            FROM files f
+            INNER JOIN user_file_access ufa ON f.file_id = ufa.file_id
+            WHERE ufa.username = %s
+            ORDER BY f.filename
+        """, (username,))
+        files = cur.fetchall()
+        cur.close()
+        conn.close()
+        return files
+    except Exception as e:
+        print(f"DB error: {e}")
+        return []
 
 login_form = '''
 <!doctype html>
@@ -126,13 +181,19 @@ login_form = '''
 </html>
 '''
 
-welcome_page = '''
+files_page = '''
 <!doctype html>
 <html lang="en">
-<head><title>Welcome</title></head>
+<head><title>Your Files</title></head>
 <body>
-  <h2>Welcome, {{ username }}!</h2>
-  <p>You successfully logged in.</p>
+  <h2>Files Accessible for {{ username }}:</h2>
+  {% for filename, content in files %}
+    <h3>{{ filename }}</h3>
+    <pre>{{ content }}</pre>
+  {% else %}
+    <p>No files accessible.</p>
+  {% endfor %}
+  <p><a href="{{ url_for('logout') }}">Logout</a></p>
 </body>
 </html>
 '''
@@ -144,10 +205,24 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         if check_user(username, password):
-            return render_template_string(welcome_page, username=username)
+            session['username'] = username
+            return redirect(url_for('files'))
         else:
             error = 'Invalid username or password'
     return render_template_string(login_form, error=error)
+
+@app.route('/files')
+def files():
+    username = session.get('username')
+    if not username:
+        return redirect(url_for('login'))
+    files = get_user_files(username)
+    return render_template_string(files_page, username=username, files=files)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
