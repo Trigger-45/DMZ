@@ -247,7 +247,7 @@ EOF
 log_ok "Webserver Flask app and Dockerfile created."
 
 log_info "Building webserver Docker image...(this may take a couple of minutes)"
-docker build -t simple-login-webserver ./webserver-content
+sudo docker build -t simple-login-webserver ./webserver-content
 log_ok "Webserver Docker image built."
 
 # =========================
