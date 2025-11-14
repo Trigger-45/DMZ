@@ -47,7 +47,7 @@ log_ok "Previous environment cleaned"
 # =========================
 # Create Database
 # =========================
-log_info "Creating PostgreSQL initial user table and seed data script..."
+log_info "Creating PostgreSQL initial user, reports, and access control schema..."
 
 mkdir -p ./db-init
 
@@ -62,33 +62,32 @@ INSERT INTO users (username, password) VALUES
 ('user', 'mypassword')
 ON CONFLICT (username) DO NOTHING;
 
--- Table for storing text files
-CREATE TABLE IF NOT EXISTS files (
-    file_id SERIAL PRIMARY KEY,
-    filename VARCHAR(100) UNIQUE NOT NULL,
-    content TEXT NOT NULL
+-- Table for storing reports
+CREATE TABLE IF NOT EXISTS reports (
+    report_id SERIAL PRIMARY KEY,
+    title VARCHAR(100) UNIQUE NOT NULL,
+    details TEXT NOT NULL
 );
 
--- Mapping users to files they can access
-CREATE TABLE IF NOT EXISTS user_file_access (
+-- Mapping users to reports they can access
+CREATE TABLE IF NOT EXISTS user_report_access (
     username VARCHAR(50) NOT NULL,
-    file_id INT NOT NULL,
-    PRIMARY KEY (username, file_id),
+    report_id INT NOT NULL,
+    PRIMARY KEY (username, report_id),
     FOREIGN KEY (username) REFERENCES users(username),
-    FOREIGN KEY (file_id) REFERENCES files(file_id)
+    FOREIGN KEY (report_id) REFERENCES reports(report_id)
 );
 
--- Insert sample files
-INSERT INTO files (filename, content) VALUES
-('file1.txt', 'This is the content of file 1.'),
-('file2.txt', 'This is the content of file 2.')
-ON CONFLICT (filename) DO NOTHING;
+-- Insert sample reports
+INSERT INTO reports (title, details) VALUES
+('Monthly Sales Summary', 'Sales increased by 8% last month in total revenue.'),
+('Confidential Strategy Document', 'Expansion plan includes entering three new markets in Q3.')
+ON CONFLICT (title) DO NOTHING;
 
--- Map normal user to access only file1.txt (id = 1) 
--- and admin to access both files
+-- Map normal user to access only "Monthly Sales Summary" report
+-- Map admin to access both reports
 
--- First find file_ids (assuming file1.txt = 1, file2.txt = 2)
-INSERT INTO user_file_access (username, file_id) VALUES
+INSERT INTO user_report_access (username, report_id) VALUES
 ('user', 1),
 ('admin', 1),
 ('admin', 2)
@@ -102,9 +101,9 @@ log_ok "Database initialization SQL created."
 # =========================
 log_info "Creating Webserver Flask app and Dockerfile..."
 
-mkdir -p ./webserver-content
+mkdir -p ./webserver-details
 
-cat << 'EOF' > ./webserver-content/app.py
+cat << 'EOF' > ./webserver-details/app.py
 from flask import Flask, request, render_template_string, redirect, url_for, session
 import psycopg2
 import os
@@ -142,21 +141,21 @@ def check_user(username, password):
         print(f"DB error: {e}")
     return False
 
-def get_user_files(username):
+def get_user_reports(username):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT f.filename, f.content
-            FROM files f
-            INNER JOIN user_file_access ufa ON f.file_id = ufa.file_id
+            SELECT r.title, r.details
+            FROM reports r
+            INNER JOIN user_report_access ufa ON r.report_id = ufa.report_id
             WHERE ufa.username = %s
-            ORDER BY f.filename
+            ORDER BY r.title
         """, (username,))
-        files = cur.fetchall()
+        reports = cur.fetchall()
         cur.close()
         conn.close()
-        return files
+        return reports
     except Exception as e:
         print(f"DB error: {e}")
         return []
@@ -166,34 +165,114 @@ login_form = '''
 <html lang="en">
 <head>
   <title>Login</title>
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #f0f2f5;
+    }
+    .login-container {
+      background: white;
+      padding: 20px 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      width: 300px;
+      text-align: center;
+    }
+    input[type="text"], input[type="password"] {
+      width: 90%;
+      padding: 8px;
+      margin: 10px 0 20px 0;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    input[type="submit"] {
+      background-color: #007bff;
+      border: none;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    input[type="submit"]:hover {
+      background-color: #0056b3;
+    }
+    p.error {
+      color: red;
+      margin: -15px 0 15px 0;
+      font-weight: bold;
+    }
+  </style>
 </head>
 <body>
-  <h2>Login Page</h2>
-  {% if error %}
-    <p style="color:red;">{{ error }}</p>
-  {% endif %}
-  <form action="{{ url_for('login') }}" method="post">
-    Username: <input type="text" name="username" required><br/><br/>
-    Password: <input type="password" name="password" required><br/><br/>
-    <input type="submit" value="Login">
-  </form>
+  <div class="login-container">
+    <h2>Login</h2>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <form action="{{ url_for('login') }}" method="post">
+      <input type="text" name="username" placeholder="Username" required><br/>
+      <input type="password" name="password" placeholder="Password" required><br/>
+      <input type="submit" value="Log In">
+    </form>
+  </div>
 </body>
 </html>
 '''
 
-files_page = '''
+reports_page = '''
 <!doctype html>
 <html lang="en">
-<head><title>Your Files</title></head>
+<head>
+  <title>Your Reports</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #fafafa;
+      margin: 20px;
+    }
+    h2 {
+      color: #333;
+    }
+    .report {
+      background: white;
+      padding: 15px;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.1);
+    }
+    .report h3 {
+      margin-top: 0;
+      color: #007bff;
+    }
+    .logout {
+      margin-top: 20px;
+      display: inline-block;
+      color: #007bff;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    .logout:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
 <body>
-  <h2>Files Accessible for {{ username }}:</h2>
-  {% for filename, content in files %}
-    <h3>{{ filename }}</h3>
-    <pre>{{ content }}</pre>
+  <h2>Reports Accessible for {{ username }}:</h2>
+  {% for title, details in reports %}
+    <div class="report">
+      <h3>{{ title }}</h3>
+      <p>{{ details }}</p>
+    </div>
   {% else %}
-    <p>No files accessible.</p>
+    <p>No reports available.</p>
   {% endfor %}
-  <p><a href="{{ url_for('logout') }}">Logout</a></p>
+  <a href="{{ url_for('logout') }}" class="logout">Logout</a>
 </body>
 </html>
 '''
@@ -206,18 +285,18 @@ def login():
         password = request.form.get('password')
         if check_user(username, password):
             session['username'] = username
-            return redirect(url_for('files'))
+            return redirect(url_for('reports'))
         else:
             error = 'Invalid username or password'
     return render_template_string(login_form, error=error)
 
-@app.route('/files')
-def files():
+@app.route('/reports')
+def reports():
     username = session.get('username')
     if not username:
         return redirect(url_for('login'))
-    files = get_user_files(username)
-    return render_template_string(files_page, username=username, files=files)
+    reports = get_user_reports(username)
+    return render_template_string(reports_page, username=username, reports=reports)
 
 @app.route('/logout')
 def logout():
@@ -228,7 +307,7 @@ if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
 EOF
 
-cat << 'EOF' > ./webserver-content/Dockerfile
+cat << 'EOF' > ./webserver-details/Dockerfile
 FROM python:3.11-alpine
 
 WORKDIR /app
@@ -247,7 +326,7 @@ EOF
 log_ok "Webserver Flask app and Dockerfile created."
 
 log_info "Building webserver Docker image...(this may take a couple of minutes)"
-sudo docker build -t simple-login-webserver ./webserver-content
+sudo docker build -t simple-login-webserver ./webserver-details
 log_ok "Webserver Docker image built."
 
 # =========================
