@@ -325,7 +325,7 @@ EOF
 
 log_ok "Webserver Flask app and Dockerfile created."
 
-log_info "Building webserver Docker image...(this may take a couple of minutes)"
+log_info "Building webserver Docker image...(this may take a minute)"
 sudo docker build -t simple-login-webserver ./webserver-details
 log_ok "Webserver Docker image built."
 
@@ -443,7 +443,6 @@ topology:
       group: filebeat
       binds:
         - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
-        - /tmp/filebeat-simulated-logs:/tmp/filebeat-simulated-logs
       cmd: filebeat -e -c /usr/share/filebeat/filebeat.yml
       cap-add:
         - NET_ADMIN
@@ -510,10 +509,9 @@ topology:
     - endpoints: ["Internal_FW:eth3", "External_FW:eth4"]
     - endpoints: ["DMZ_Switch:eth2", "External_FW:eth1"]
     - endpoints: ["Proxy_WAF:eth1", "DMZ_Switch:eth3"]
-    - endpoints: ["Database:eth1", "DMZ_Switch:eth4"]
-    - endpoints: ["Database:eth2", "Webserver:eth2"]
+    - endpoints: ["Database:eth1", "Webserver:eth2"]
     - endpoints: ["Proxy_WAF:eth2", "Webserver:eth1"]
-    - endpoints: ["IDS:eth1", "DMZ_Switch:eth5"]
+    - endpoints: ["IDS:eth1", "DMZ_Switch:eth4"]
     - endpoints: ["IDS:eth2", "filebeat:eth1"]
     - endpoints: ["filebeat:eth2", "elasticsearch:eth1"]
     - endpoints: ["elasticsearch:eth2", "kibana:eth1"]
@@ -569,25 +567,6 @@ log_ok "Filebeat configuration '${filebeat_config}' created"
 mkdir -p ./dbdata
 sudo chmod 0777 ./dbdata
 
-# =========================
-# Prepare log directories
-# =========================
-log_info "Preparing /tmp/filebeat-simulated-logs..."
-sudo mkdir -p /tmp/filebeat-simulated-logs
-sudo chmod 0777 /tmp/filebeat-simulated-logs
-sudo touch /tmp/filebeat-simulated-logs/test.log
-sudo chmod 0666 /tmp/filebeat-simulated-logs/test.log
-# firewall logs
-sudo touch /tmp/filebeat-simulated-logs/fw_internal.log
-sudo touch /tmp/filebeat-simulated-logs/fw_external.log
-sudo chmod 0666 /tmp/filebeat-simulated-logs/fw_*.log
-log_ok "Host log directory ready"
-
-log_info "Seeding initial dummy logs..."
-for i in $(seq 1 20); do
-  echo "$(date -u +"%Y-%m-%d %H:%M:%S UTC") - Dummy log entry number $i" | sudo tee -a /tmp/filebeat-simulated-logs/test.log >/dev/null
-done
-log_ok "Initial logs seeded"
 
 # =========================
 # Deploy containerlab
@@ -599,19 +578,12 @@ log_ok "Containerlab deployed"
 # =========================
 # Wait for Elasticsearch to be ready
 # =========================
-log_info "Waiting for Elasticsearch to be ready (this can take a minute)..."
+log_info "Waiting for Elasticsearch to be ready (this may take a couple of minutes)..."
 until sudo docker exec clab-MaJuVi-elasticsearch curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green"'; do
   sudo docker exec clab-MaJuVi-elasticsearch curl -s http://localhost:9200/_cluster/health || true
   sleep 5
 done
 log_ok "Elasticsearch cluster reports green"
-
-# =========================
-# Push Filebeat config into place and start Filebeat
-# =========================
-log_info "Copying filebeat.yml into working directory for containerlab..."
-# ensure we have the file in current dir (containerlab topology references ./filebeat.yml)
-# (already written above)
 
 # Remove possible Filebeat lockfile if container already exists
 if sudo docker ps -a --format '{{.Names}}' | grep -q 'clab-MaJuVi-filebeat'; then
@@ -625,13 +597,6 @@ sudo docker restart clab-MaJuVi-filebeat || true
 # ensure filebeat runs with explicit command (relaunch if necessary)
 sudo docker exec -d clab-MaJuVi-filebeat sh -c 'filebeat -e -c /usr/share/filebeat/filebeat.yml' || true
 log_ok "Filebeat (re)started"
-
-# =========================
-# Continuous dummy log generation inside Filebeat container
-# =========================
-log_info "Starting continuous dummy log generation..."
-sudo docker exec -d clab-MaJuVi-filebeat sh -c 'while true; do echo "$(date -u +"%Y-%m-%d %H:%M:%S UTC") - simulated log entry" >> /tmp/filebeat-simulated-logs/test.log; sleep 5; done'
-log_ok "Continuous log generation started"
 
 # =========================
 # Firewall: ensure ip forwarding + iptables base rules (Internal_FW)
@@ -655,30 +620,46 @@ echo 1 > /proc/sys/net/ipv4/ip_forward
 # Flush rules
 iptables -F
 iptables -t nat -F
+iptables -X
+
+# Default policy
 iptables -P FORWARD DROP
 
-# Base rules
+# --- Helpful: drop/inspect INVALID early
+iptables -N LOG_INVALID || true
+iptables -A LOG_INVALID -m limit --limit 10/min --limit-burst 20 -j LOG --log-prefix "FW INVALID: " --log-level 4
+iptables -A LOG_INVALID -j DROP
+iptables -A FORWARD -m conntrack --ctstate INVALID -j LOG_INVALID
+
+# Create logging chains (rate-limited)
+iptables -N LOG_NEW_ACCEPT || true
+iptables -A LOG_NEW_ACCEPT -m limit --limit 10/min --limit-burst 20 -j LOG --log-prefix "FW NEW ACCEPT: " --log-level 4
+iptables -A LOG_NEW_ACCEPT -j RETURN
+
+iptables -N LOG_NEW_DROP || true
+iptables -A LOG_NEW_DROP -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "FW NEW DROP: " --log-level 4
+iptables -A LOG_NEW_DROP -j RETURN
+
+# Base rules: allow established/related
 iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# --- Internal → DMZ (NEW allowed)
+# --- Internal → DMZ (NEW allowed) — log NEW then accept
+iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
 iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
 
 # --- DMZ → Internal: only RELATED/ESTABLISHED
+# Log any NEW attempts from DMZ to Internal and drop
+iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j LOG_NEW_DROP
 iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j DROP
 
 # --- Internal → Internet (via eth3)
 # allow NEW from internal network to go out on eth3 (towards External_FW)
+iptables -A FORWARD -i eth1 -o eth3 -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
 iptables -A FORWARD -i eth1 -o eth3 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -i eth3 -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# NOTE: NO NAT here for 192.168.10.0/24 — NAT will be done on External_FW
-# (remove/avoid any MASQUERADE on Internal_FW)
-
-# Optional logging DMZ → Internal NEW
-iptables -N DMZ_TO_INTERNAL_LOG || true
-iptables -A DMZ_TO_INTERNAL_LOG -m limit --limit 5/min -j LOG --log-prefix "DMZ->INT BLOCK: " --log-level 4
-iptables -A DMZ_TO_INTERNAL_LOG -j RETURN
-iptables -I FORWARD 1 -i eth2 -o eth1 -m conntrack --ctstate NEW -j DMZ_TO_INTERNAL_LOG
+# Optional: log DNS/ICMP or other protos if desired (example for ICMP NEW)
+# iptables -A FORWARD -p icmp -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
 
 # ------------------------------------------------------------------
 # Routing so Internal_FW forwards toward External_FW for router/edge subnets
@@ -688,12 +669,19 @@ iptables -I FORWARD 1 -i eth2 -o eth1 -m conntrack --ctstate NEW -j DMZ_TO_INTER
 ip route replace 172.168.2.0/30 via 192.168.20.2 dev eth3 || true
 ip route replace 172.168.3.0/30 via 192.168.20.2 dev eth3 || true
 
-# If you prefer External_FW to be default gateway for everything outside internal nets,
-# uncomment the next line (instead of adding many specific routes)
-# ip route replace default via 192.168.20.2 dev eth3 || true
+# Final catch-all: log any remaining NEW forward attempts (rate-limited) before they are dropped by policy
+iptables -I FORWARD  -m conntrack --ctstate NEW -j LOG_NEW_DROP
+
+# NOTE: NO NAT here for 192.168.10.0/24 — NAT will be done on External_FW
+# (remove/avoid any MASQUERADE on Internal_FW)
+
+# Optional: use NFLOG/ulogd for structured logging (uncomment if ulogd configured)
+# iptables -A FORWARD -m conntrack --ctstate NEW -j NFLOG --nflog-group 1 --nflog-prefix "FW NEW NFLOG: "
+# iptables -A FORWARD -m conntrack --ctstate INVALID -j NFLOG --nflog-group 1 --nflog-prefix "FW INVALID NFLOG: "
 
 EOF
 log_ok "Internal Firewall configured"
+
 
 # =========================
 # Firewall: External_FW
@@ -752,34 +740,6 @@ ip route replace 192.168.10.0/24 via 192.168.20.1 dev eth4 || true
 EOF
 log_ok "External Firewall configured"
 
-
-# =========================
-# Create background host-side tasks that poll iptables/stats from the firewall containers
-# and write them into host /tmp/filebeat-simulated-logs/fw_*.log so that Filebeat picks them up.
-# =========================
-
-log_info "Starting host-side firewall loggers (poll iptables counters and write to host logs)..."
-
-# Internal FW logger (runs on host, polling the firewall container)
-sudo bash -c 'nohup bash -c \
-"while true; do
-  echo \"$(date -u +\"%Y-%m-%d %H:%M:%S UTC\") - >>> INTERNAL_FW IPTABLES FORWARD (top 40 lines)\" >> /tmp/filebeat-simulated-logs/fw_internal.log
-  sudo docker exec clab-MaJuVi-Internal_FW iptables -L FORWARD -v -n --line-numbers | sed -n \"1,40p\" >> /tmp/filebeat-simulated-logs/fw_internal.log 2>/dev/null || echo \"(unable to query iptables inside container)\" >> /tmp/filebeat-simulated-logs/fw_internal.log
-  echo \"\" >> /tmp/filebeat-simulated-logs/fw_internal.log
-  sleep 5
-done" >/tmp/fw_internal_logger.out 2>&1 &'
-
-# External FW logger (similar)
-sudo bash -c 'nohup bash -c \
-"while true; do
-  echo \"$(date -u +\"%Y-%m-%d %H:%M:%S UTC\") - >>> EXTERNAL_FW IPTABLES FORWARD (top 40 lines)\" >> /tmp/filebeat-simulated-logs/fw_external.log
-  sudo docker exec clab-MaJuVi-External_FW iptables -L FORWARD -v -n --line-numbers | sed -n \"1,40p\" >> /tmp/filebeat-simulated-logs/fw_external.log 2>/dev/null || echo \"(unable to query iptables inside container)\" >> /tmp/filebeat-simulated-logs/fw_external.log
-  echo \"\" >> /tmp/filebeat-simulated-logs/fw_external.log
-  sleep 5
-done" >/tmp/fw_external_logger.out 2>&1 &'
-
-log_ok "Firewall loggers started (host-side pollers writing into /tmp/filebeat-simulated-logs/)"
-
 # =========================
 # Internal Clients (IP + default route)
 # =========================
@@ -836,6 +796,25 @@ ip link set eth3 up
 ip link set eth4 up
 EOF
 log_ok "DMZ Switch konfiguriert"
+
+# =========================
+# Database config
+# =========================
+log_info "Configuring Database"
+sudo docker exec -i clab-MaJuVi-Database sh <<'EOF'
+set -e
+if command -v apt >/dev/null 2>&1; then
+  apt update >/dev/null 2>&1 || true
+  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
+elif command -v apk >/dev/null 2>&1; then
+  apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
+fi
+
+ip addr add 10.0.2.10/24 dev eth1 || true
+ip link set eth1 up
+ip route replace default via 10.0.2.1 || true
+EOF
+log_ok "Database configured"
 
 # =========================
 # Webserver config
@@ -919,10 +898,6 @@ ip route replace 192.168.10.0/24 via 172.168.2.2 || true
 # route to attacker network (locally attached already, but keep explicit)
 ip route replace 200.168.1.0/24 dev eth1 || true
 ip route replace 172.168.3.2 via 172.168.2.2 dev eth2
-
-# Debug
-iptables -L -v -n --line-numbers || true
-ip -4 route show || true
 EOF
 log_ok "router-internet configured"
 
@@ -979,8 +954,8 @@ log_ok "Admin-PC configured"
 log_info "Configuring Elasticsearch SIEM interface for Admin-Firewall"
 sudo docker exec -u 0 -i clab-MaJuVi-elasticsearch bash <<'EOF'
 set -e
-apt-get update -qq || true
-apt-get install -y iproute2 iputils-ping -qq || true
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y iproute2 iputils-ping -qq >/dev/null 2>&1 || true
 ip addr add 10.0.3.10/24 dev eth3 || true
 ip link set eth3 up
 EOF
@@ -990,8 +965,8 @@ log_ok "Elasticsearch SIEM interface configured"
 log_info "Configuring Kibana SIEM interface for Admin-Firewall"
 sudo docker exec -u 0 -i clab-MaJuVi-kibana bash <<'EOF'
 set -e
-apt-get update -qq || true
-apt-get install -y iproute2 iputils-ping -qq || true
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y iproute2 iputils-ping -qq >/dev/null 2>&1 || true
 ip addr add 10.0.3.11/24 dev eth2 || true
 ip link set eth2 up
 EOF
