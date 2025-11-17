@@ -810,21 +810,16 @@ log_ok "Database configured"
 # =========================
 # Webserver config
 # =========================
-#log_info "Configuring Webserver"
-#sudo docker exec -i clab-MaJuVi-Webserver sh <<'EOF'
-#set -e
-#if command -v apt >/dev/null 2>&1; then
-#  apt update >/dev/null 2>&1 || true
-#  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
-#elif command -v apk >/dev/null 2>&1; then
-#  apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
-#fi
-#
-#ip addr add 10.0.2.30/24 dev eth1 || true
-#ip link set eth1 up
-#ip route replace default via 10.0.2.1 || true
-#EOF
-#log_ok "Webserver configured"
+log_info "Configuring Webserver"
+sudo docker exec -i --user root clab-MaJuVi-Web_Proxy_WAF sh <<'EOF'
+set -e
+apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
+
+ip addr add 10.0.2.30/24 dev eth1 || true
+ip link set eth1 up
+ip route replace default via 10.0.2.1 || true
+EOF
+log_ok "Webserver configured"
 
 # =========================
 # Attacker host config (netzwerkseitig)
