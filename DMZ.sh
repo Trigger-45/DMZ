@@ -389,17 +389,9 @@ topology:
       cap-add:
         - NET_ADMIN
         - NET_RAW
-    Proxy_WAF:
+    Web_Proxy_WAF:
       kind: linux
-      image: nginx:latest
-      group: proxy
-      ports:
-        - "80:80"
-      cap-add:
-        - NET_ADMIN
-    Webserver:
-      kind: linux
-      image: simple-login-webserver
+      image: owasp/modsecurity-crs:nginx-alpine
       group: server
       ports:
         - "8181:8080"
@@ -508,9 +500,8 @@ topology:
     - endpoints: ["Internal_FW:eth2", "DMZ_Switch:eth1"]
     - endpoints: ["Internal_FW:eth3", "External_FW:eth4"]
     - endpoints: ["DMZ_Switch:eth2", "External_FW:eth1"]
-    - endpoints: ["Proxy_WAF:eth1", "DMZ_Switch:eth3"]
-    - endpoints: ["Database:eth1", "Webserver:eth2"]
-    - endpoints: ["Proxy_WAF:eth2", "Webserver:eth1"]
+    - endpoints: ["Web_Proxy_WAF:eth1", "DMZ_Switch:eth3"]
+    - endpoints: ["Database:eth1", "Web_Proxy_WAF:eth2"]
     - endpoints: ["IDS:eth1", "DMZ_Switch:eth4"]
     - endpoints: ["IDS:eth2", "filebeat:eth1"]
     - endpoints: ["filebeat:eth2", "elasticsearch:eth1"]
@@ -522,7 +513,7 @@ topology:
     - endpoints: ["IDS2:eth2", "filebeat:eth3"]
     - endpoints: ["filebeat:eth4", "Internal_FW:eth4"]
     - endpoints: ["filebeat:eth5", "External_FW:eth3"]
-    - endpoints: ["filebeat:eth6", "Proxy_WAF:eth3"]
+    - endpoints: ["filebeat:eth6", "Web_Proxy_WAF:eth3"]
     - endpoints: ["Admin_PC:eth1", "elasticsearch:eth3"]
     - endpoints: ["Admin_PC:eth2", "kibana:eth2"]
 EOF
@@ -819,21 +810,21 @@ log_ok "Database configured"
 # =========================
 # Webserver config
 # =========================
-log_info "Configuring Webserver"
-sudo docker exec -i clab-MaJuVi-Webserver sh <<'EOF'
-set -e
-if command -v apt >/dev/null 2>&1; then
-  apt update >/dev/null 2>&1 || true
-  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
-elif command -v apk >/dev/null 2>&1; then
-  apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
-fi
-
-ip addr add 10.0.2.30/24 dev eth1 || true
-ip link set eth1 up
-ip route replace default via 10.0.2.1 || true
-EOF
-log_ok "Webserver configured"
+#log_info "Configuring Webserver"
+#sudo docker exec -i clab-MaJuVi-Webserver sh <<'EOF'
+#set -e
+#if command -v apt >/dev/null 2>&1; then
+#  apt update >/dev/null 2>&1 || true
+#  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
+#elif command -v apk >/dev/null 2>&1; then
+#  apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
+#fi
+#
+#ip addr add 10.0.2.30/24 dev eth1 || true
+#ip link set eth1 up
+#ip route replace default via 10.0.2.1 || true
+#EOF
+#log_ok "Webserver configured"
 
 # =========================
 # Attacker host config (netzwerkseitig)
