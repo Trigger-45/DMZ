@@ -634,89 +634,327 @@ sudo docker restart clab-MaJuVi-filebeat || true
 sudo docker exec -d clab-MaJuVi-filebeat sh -c 'filebeat -e -c /usr/share/filebeat/filebeat.yml' || true
 log_ok "Filebeat (re)started"
 
-# =========================
-# Firewall: ensure ip forwarding + iptables base rules (Internal_FW)
-# - Internal -> DMZ allowed (NEW)
-# - DMZ -> Internal NEW blocked
-# =========================
-log_info "Configuring Internal Firewall"
-sudo docker exec -i clab-MaJuVi-Internal_FW sh <<'EOF'
+log_info "Configuring Internal Firewall with NFLOG (only working method)"
+sudo docker exec -i clab-MaJuVi-Internal_FW bash <<'EOF'
 set -e
-# Interfaces
-ip addr add 192.168.10.1/24 dev eth1   # intern
-ip addr add 10.0.2.1/24 dev eth2       # DMZ
-ip addr add 192.168.20.1/24 dev eth3   # direct link to External_FW (peer 192.168.20.2)
+
+echo "=========================================="
+echo "Internal Firewall Setup with NFLOG"
+echo "=========================================="
+echo ""
+
+# ============================================
+# Install packages
+# ============================================
+echo "[1/6] Installing packages..."
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -qq 2>&1 | tail -5
+apt-get install -y --no-install-recommends \
+    iptables \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    ulogd2 \
+    ulogd2-json \
+    bash \
+    procps \
+    2>&1 | tail -10
+
+echo "[OK] Packages installed"
+
+# ============================================
+# Switch to iptables-legacy
+# ============================================
+echo "[2/6] Switching to iptables-legacy..."
+update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
+update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+echo "[OK] Using: $(iptables --version)"
+
+# ============================================
+# Configure network interfaces
+# ============================================
+echo "[3/6] Configuring network interfaces..."
+ip addr add 192.168.10.1/24 dev eth1 2>/dev/null || true   # Internal
+ip addr add 10.0.2.1/24 dev eth2 2>/dev/null || true       # DMZ
+ip addr add 192.168.20.1/24 dev eth3 2>/dev/null || true   # To External_FW
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth3 up
-
-# Enable forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
+echo "[OK] Network configured"
 
-# Flush rules
+# ============================================
+# Configure ulogd2 for NFLOG
+# ============================================
+echo "[4/6] Configuring ulogd2..."
+mkdir -p /var/log/firewall /var/log/ulogd /etc/ulogd
+
+cat > /etc/ulogd/ulogd.conf << 'ULOGD_CONFIG'
+[global]
+logfile="/var/log/ulogd/ulogd.log"
+loglevel=5
+
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_inppkt_NFLOG.so"
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_raw2packet_BASE.so"
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_filter_IFINDEX.so"
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_filter_IP2STR.so"
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_filter_PRINTPKT.so"
+plugin="/usr/lib/x86_64-linux-gnu/ulogd/ulogd_output_LOGEMU.so"
+
+stack=log1:NFLOG,base1:BASE,ifi1:IFINDEX,ip2str1:IP2STR,print1:PRINTPKT,emu1:LOGEMU
+
+[log1]
+group=0
+
+[base1]
+[ifi1]
+[ip2str1]
+[print1]
+
+[emu1]
+file="/var/log/firewall/firewall-events.log"
+sync=1
+ULOGD_CONFIG
+
+# Stop any existing ulogd
+pkill ulogd 2>/dev/null || true
+sleep 1
+
+# Start ulogd2
+ulogd -d -c /etc/ulogd/ulogd.conf &
+ULOGD_PID=$!
+sleep 2
+
+# Verify ulogd is running
+if pgrep -x ulogd >/dev/null; then
+    echo "[OK] ulogd2 running (PID: $(pgrep -x ulogd))"
+else
+    echo "[ERROR] ulogd2 failed to start!"
+    if [ -f /var/log/ulogd/ulogd.log ]; then
+        echo "ulogd log:"
+        cat /var/log/ulogd/ulogd.log
+    fi
+    exit 1
+fi
+
+# ============================================
+# Configure iptables with NFLOG
+# ============================================
+echo "[5/6] Configuring iptables with NFLOG..."
+
+# Flush existing rules
 iptables -F
 iptables -t nat -F
-iptables -X
+iptables -X 2>/dev/null || true
 
-# Default policy
+# Set policies
+iptables -P INPUT DROP
 iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
 
-# --- Helpful: drop/inspect INVALID early
-iptables -N LOG_INVALID || true
-iptables -A LOG_INVALID -m limit --limit 10/min --limit-burst 20 -j LOG --log-prefix "FW INVALID: " --log-level 4
+# ============================================
+# INPUT Chain
+# ============================================
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -s 192.168.10.0/24 -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -s 10.0.2.0/24 -j ACCEPT
+
+# Log INPUT drops
+iptables -A INPUT -m limit --limit 5/min -j NFLOG \
+  --nflog-prefix "[INT-FW-INPUT-DROP] " \
+  --nflog-group 0
+
+# ============================================
+# FORWARD Chain
+# ============================================
+
+# Invalid packets
+iptables -N LOG_INVALID
+iptables -A LOG_INVALID -m limit --limit 10/min --limit-burst 20 -j NFLOG \
+  --nflog-prefix "[INT-FW-INVALID-DROP] " \
+  --nflog-group 0
 iptables -A LOG_INVALID -j DROP
 iptables -A FORWARD -m conntrack --ctstate INVALID -j LOG_INVALID
 
-# Create logging chains (rate-limited)
-iptables -N LOG_NEW_ACCEPT || true
-iptables -A LOG_NEW_ACCEPT -m limit --limit 10/min --limit-burst 20 -j LOG --log-prefix "FW NEW ACCEPT: " --log-level 4
-iptables -A LOG_NEW_ACCEPT -j RETURN
-
-iptables -N LOG_NEW_DROP || true
-iptables -A LOG_NEW_DROP -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "FW NEW DROP: " --log-level 4
-iptables -A LOG_NEW_DROP -j RETURN
-
-# Base rules: allow established/related
+# Established/Related
 iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# --- Internal → DMZ (NEW allowed) — log NEW then accept
-iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
+# Internal → DMZ
+iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
+  --nflog-prefix "[INT-FW-INTERN-TO-DMZ] " \
+  --nflog-group 0
 iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
 
-# --- DMZ → Internal: only RELATED/ESTABLISHED
-# Log any NEW attempts from DMZ to Internal and drop
-iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j LOG_NEW_DROP
+# DMZ → Internal (blocked)
+iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
+  --nflog-prefix "[INT-FW-DMZ-TO-INTERN-DROP] " \
+  --nflog-group 0
 iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j DROP
 
-# --- Internal → Internet (via eth3)
-# allow NEW from internal network to go out on eth3 (towards External_FW)
-iptables -A FORWARD -i eth1 -o eth3 -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
+# Internal → Internet
+iptables -A FORWARD -i eth1 -o eth3 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
+  --nflog-prefix "[INT-FW-INTERN-TO-INET] " \
+  --nflog-group 0
 iptables -A FORWARD -i eth1 -o eth3 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -i eth3 -o eth1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Optional: log DNS/ICMP or other protos if desired (example for ICMP NEW)
-# iptables -A FORWARD -p icmp -m conntrack --ctstate NEW -j LOG_NEW_ACCEPT
+# Catch-all
+iptables -A FORWARD -m limit --limit 5/min -j NFLOG \
+  --nflog-prefix "[INT-FW-FORWARD-DROP] " \
+  --nflog-group 0
 
-# ------------------------------------------------------------------
-# Routing so Internal_FW forwards toward External_FW for router/edge subnets
-# send traffic for 172.168.2.0/30 (router-internet) via External_FW (192.168.20.2)
-# and also route to 172.168.3.0/30 (router-edge) via External_FW
-# ------------------------------------------------------------------
-ip route replace 172.168.2.0/30 via 192.168.20.2 dev eth3 || true
-ip route replace 172.168.3.0/30 via 192.168.20.2 dev eth3 || true
+# ============================================
+# Routing
+# ============================================
+ip route replace 172.168.2.0/30 via 192.168.20.2 dev eth3 2>/dev/null || true
+ip route replace 172.168.3.0/30 via 192.168.20.2 dev eth3 2>/dev/null || true
 
-# Final catch-all: log any remaining NEW forward attempts (rate-limited) before they are dropped by policy
-iptables -I FORWARD  -m conntrack --ctstate NEW -j LOG_NEW_DROP
+echo "[OK] iptables rules configured"
 
-# NOTE: NO NAT here for 192.168.10.0/24 — NAT will be done on External_FW
-# (remove/avoid any MASQUERADE on Internal_FW)
+# ============================================
+# Create helper scripts
+# ============================================
+echo "[6/6] Creating helper scripts..."
 
-# Optional: use NFLOG/ulogd for structured logging (uncomment if ulogd configured)
-# iptables -A FORWARD -m conntrack --ctstate NEW -j NFLOG --nflog-group 1 --nflog-prefix "FW NEW NFLOG: "
-# iptables -A FORWARD -m conntrack --ctstate INVALID -j NFLOG --nflog-group 1 --nflog-prefix "FW INVALID NFLOG: "
+cat > /usr/local/bin/fw-stats << 'STATS_SCRIPT'
+#!/bin/bash
+echo "=========================================="
+echo "Internal Firewall Statistics"
+echo "=========================================="
+echo ""
+echo "Logging Method: NFLOG + ulogd2"
+echo "iptables: $(iptables --version)"
+echo ""
+
+# ulogd status
+if pgrep -x ulogd >/dev/null; then
+    echo "ulogd2 Status:   RUNNING (PID: $(pgrep -x ulogd))"
+else
+    echo "ulogd2 Status:   NOT RUNNING"
+fi
+echo ""
+
+echo "--- Last 20 Firewall Events ---"
+if [ -f /var/log/firewall/firewall-events.log ] && [ -s /var/log/firewall/firewall-events.log ]; then
+    tail -20 /var/log/firewall/firewall-events.log
+else
+    LOG_SIZE=$(stat -c%s /var/log/firewall/firewall-events.log 2>/dev/null || echo "0")
+    echo "No events logged yet"
+    echo "Log file size: $LOG_SIZE bytes"
+    echo ""
+    if [ "$LOG_SIZE" == "0" ] && ! pgrep -x ulogd >/dev/null; then
+        echo "   WARNING: ulogd2 is not running!"
+        echo "   Restart it with: ulogd -d -c /etc/ulogd/ulogd.conf &"
+    fi
+fi
+
+echo ""
+echo "--- Event Summary ---"
+if [ -f /var/log/firewall/firewall-events.log ]; then
+    TOTAL=$(wc -l < /var/log/firewall/firewall-events.log)
+    echo "Total events: $TOTAL"
+    
+    if [ $TOTAL -gt 0 ]; then
+        echo ""
+        echo "Events by type:"
+        grep -o 'INT-FW-[A-Z-]*' /var/log/firewall/firewall-events.log 2>/dev/null | sort | uniq -c | sort -rn || true
+    fi
+fi
+
+echo ""
+echo "--- iptables Rule Counters ---"
+iptables -L -v -n | grep -E "Chain|NFLOG|pkts" | head -30
+
+echo ""
+echo "=========================================="
+STATS_SCRIPT
+
+cat > /usr/local/bin/fw-logs-live << 'LIVE_SCRIPT'
+#!/bin/bash
+echo "=== Live Internal Firewall Logs (NFLOG) ==="
+echo "Press CTRL+C to stop"
+echo ""
+
+if [ -f /var/log/firewall/firewall-events.log ]; then
+    tail -f /var/log/firewall/firewall-events.log
+else
+    echo "ERROR: Log file not found"
+    exit 1
+fi
+LIVE_SCRIPT
+
+cat > /usr/local/bin/fw-search << 'SEARCH_SCRIPT'
+#!/bin/bash
+if [ -z "$1" ]; then
+    echo "Usage: fw-search <search_term>"
+    echo "Example: fw-search '192.168.10.10'"
+    echo "Example: fw-search 'DMZ-TO-INTERN'"
+    exit 1
+fi
+
+echo "Searching for: $1"
+echo ""
+
+if [ -f /var/log/firewall/firewall-events.log ]; then
+    grep -i "$1" /var/log/firewall/firewall-events.log || echo "No matches found"
+else
+    echo "ERROR: Log file not found"
+    exit 1
+fi
+SEARCH_SCRIPT
+
+chmod +x /usr/local/bin/fw-stats
+chmod +x /usr/local/bin/fw-logs-live
+chmod +x /usr/local/bin/fw-search
+
+echo "[OK] Helper scripts created"
+
+# ============================================
+# Final verification
+# ============================================
+echo ""
+echo "=========================================="
+echo "  Internal Firewall Configuration Complete"
+echo "=========================================="
+echo ""
+echo "Logging: NFLOG + ulogd2"
+echo "Log file: /var/log/firewall/firewall-events.log"
+echo ""
+echo "Helper Commands:"
+echo "  fw-stats      - Show statistics and recent events"
+echo "  fw-logs-live  - View live logs"
+echo "  fw-search     - Search logs"
+echo ""
+echo "Testing..."
+
+sleep 3
+
+if [ -f /var/log/firewall/firewall-events.log ]; then
+    SIZE=$(stat -c%s /var/log/firewall/firewall-events.log 2>/dev/null || echo "0")
+    echo "Log file size: $SIZE bytes"
+    
+    if [ "$SIZE" -gt "0" ]; then
+        echo "  Logging is working! Latest entries:"
+        tail -5 /var/log/firewall/firewall-events.log
+    else
+        echo "  Log file exists but is empty (normal if no traffic matched rules yet)"
+        echo ""
+        echo "Verification:"
+        echo "  - ulogd2: $(pgrep -x ulogd >/dev/null && echo 'RUNNING  ' || echo 'NOT RUNNING  ')"
+        echo "  - NFLOG rules: $(iptables -L -v -n | grep -c NFLOG) configured"
+    fi
+else
+    echo "   WARNING: Log file not created!"
+fi
+
+echo ""
+echo "=========================================="
 
 EOF
-log_ok "Internal Firewall configured"
+log_ok "Internal Firewall configured with NFLOG logging"
 
 
 # =========================
