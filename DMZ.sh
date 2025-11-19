@@ -841,7 +841,7 @@ sudo docker exec -i clab-MaJuVi-Database sh <<'EOF'
 set -e
 if command -v apt >/dev/null 2>&1; then
   apt update >/dev/null 2>&1 || true
-  apt install -y iproute2 iputils-ping 
+  apt install -y iproute2 iputils-ping >/dev/null 2>&1 || true
 elif command -v apk >/dev/null 2>&1; then
   apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
 fi
