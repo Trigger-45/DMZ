@@ -4,15 +4,55 @@ set -euo pipefail
 # =========================
 # Terminal Color Setup
 # =========================
+# =========================
+# Terminal Color & Logging Setup
+# =========================
 RED="\e[31m"
 GREEN="\e[32m"
 BLUE="\e[34m"
 YELLOW="\e[33m"
+CYAN="\e[36m"
+MAGENTA="\e[35m"
+BOLD="\e[1m"
 ENDCOLOR="\e[0m"
 
-log_info()    { echo -e "${BLUE}[ INFO ]${ENDCOLOR} $1"; }
-log_ok()      { echo -e "${GREEN}[  OK  ]${ENDCOLOR} $1"; }
-log_error()   { echo -e "${RED}[ERROR ]${ENDCOLOR} $1"; }
+# Timestamp-Funktion
+get_timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
+# Verbesserte Log-Funktionen
+log_section() { 
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${ENDCOLOR}"
+    echo -e "${BOLD}${CYAN}  $1${ENDCOLOR}"
+    echo -e "${BOLD}${CYAN}========================================${ENDCOLOR}"
+    echo ""
+}
+
+log_subsection() {
+    echo -e "${MAGENTA}--- $1 ---${ENDCOLOR}"
+}
+
+log_info() { 
+    echo -e "${BLUE}[$(get_timestamp)]${ENDCOLOR} ${BLUE}[ INFO ]${ENDCOLOR} $1"
+}
+
+log_ok() { 
+    echo -e "${GREEN}[$(get_timestamp)]${ENDCOLOR} ${GREEN}[  OK  ]${ENDCOLOR} $1"
+}
+
+log_error() { 
+    echo -e "${RED}[$(get_timestamp)]${ENDCOLOR} ${RED}[ ERROR ]${ENDCOLOR} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[$(get_timestamp)]${ENDCOLOR} ${YELLOW}[ WARN ]${ENDCOLOR} $1"
+}
+
+log_step() {
+    echo -e "${CYAN}[$(get_timestamp)]${ENDCOLOR} ${CYAN}[STEP $1]${ENDCOLOR} $2"
+}
 
 # =========================
 # Variables
@@ -22,35 +62,49 @@ filebeat_config="filebeat.yml"
 Internal_Client1_ip="192.168.10.10/24"
 Internal_Client2_ip="192.168.10.11/24"
 Admin_PC_ip="10.0.3.100/24"
-#Admin_FW_internal_ip="192.168.100.1/24"  # Admin-Firewall Interface zum Admin-PC
-#Admin_FW_siem_ip="10.0.3.1/24"           # Admin-Firewall Interface zum SIEM
 SIEM_subnet="10.0.3.0/24"
 
-# =========================
-# Cleanup old environment
-# =========================
-log_info "Cleaning up previous containers and data..."
 
-# Destroy containerlab setup if exists
+# =========================
+# SECTION 1: Environment Cleanup
+# =========================
+
+log_section "SECTION 1: Environment Cleanup"
+
+log_step "1/3" "Destroying previous containerlab setup..."
 sudo containerlab destroy --topo "$file_name" || true
+log_ok "Containerlab destroyed"
 
-# Remove Docker leftover containers, volumes, networks
+log_step "2/3" "Removing Docker leftovers..."
 sudo docker container prune -f || true
 sudo docker network prune -f || true
 sudo docker volume prune -f || true
+log_ok "Docker resources cleaned"
 
-# Remove previous data directories
-sudo rm -rf /tmp/filebeat-simulated-logs /tmp/filebeat-data ./dbdata || true
+log_step "3/3" "Removing data directories..."
+sudo rm -rf ./db-init ./webserver-details ./logstash || true
+log_ok "Data directories removed"
 
-log_ok "Previous environment cleaned"
+echo ""
+log_ok "Environment cleanup completed"
+
 
 # =========================
-# Create Database
+# SECTION 2: Create required files and configurations
 # =========================
-log_info "Creating PostgreSQL initial user, reports, and access control schema..."
+log_section "SECTION 2: Create required files and configurations"
 
+# Create directory structure
+mkdir -p ./logstash/config
+mkdir -p ./logstash/pipeline
+sudo chmod -R 0777 ./logstash
+mkdir -p ./webserver-details
 mkdir -p ./db-init
 
+log_step "1/3" "Creating Database initialization SQL..."
+
+
+log_info "Creating init-users.sql for PostgreSQL..."
 cat << 'EOF' > ./db-init/init-users.sql
 CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(50) PRIMARY KEY,
@@ -99,10 +153,9 @@ log_ok "Database initialization SQL created."
 # =========================
 # Create Webserver
 # =========================
-log_info "Creating Webserver Flask app and Dockerfile..."
+log_step "2/3" "Creating Webserver Flask app and Dockerfile..."
 
-mkdir -p ./webserver-details
-
+log_info "Creating start.sh script..."
 cat << 'EOF' > ./webserver-details/start.sh
 #!/bin/sh
 # Starte Flask App im Hintergrund
@@ -112,6 +165,7 @@ python3 /app/app.py &
 nginx -g "daemon off;"
 EOF
 
+log_info "Creating Nginx configuration..."
 cat << 'EOF' > ./webserver-details/nginx.conf
 user nginx;
 worker_processes auto;
@@ -143,7 +197,9 @@ http {
     }
 }
 EOF
+log_ok "Nginx configuration created."
 
+log_info "Creating Flask app..."
 cat << 'EOF' > ./webserver-details/app.py
 from flask import Flask, request, render_template_string, redirect, url_for, session
 import psycopg2
@@ -348,6 +404,9 @@ if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
 EOF
 
+log_ok "Flask app created."
+
+log_info "Creating Dockerfile for Webserver with WAF..."
 cat << 'EOF' > ./webserver-details/Dockerfile
 FROM owasp/modsecurity-crs:nginx-alpine
 
@@ -367,31 +426,19 @@ EXPOSE 8080
 
 CMD ["/app/start.sh"]
 EOF
+log_ok "Dockerfile created."
 
-log_ok "Webserver Flask app and Dockerfile created."
 
-log_info "Building Webserver-waf-proxy Docker image...(this may take a minute)"
-sudo docker build -t webserver-waf-proxy ./webserver-details
-log_ok "Webserver-waf-proxy Docker image built."
-
-# =========================
-# Create Logstash Configuration
-# =========================
-log_info "Creating Logstash configuration..."
-
-# Create directory structure
-mkdir -p ./logstash/config
-mkdir -p ./logstash/pipeline
-sudo chmod -R 0777 ./logstash
-
+log_step "3/3" "Creating Logstash configuration..."
 # Main Logstash configuration
+log_info "Creating Logstash main configuration..."
 cat << 'EOF' > ./logstash/config/logstash.yml
 http.host: "0.0.0.0"
 path.config: /usr/share/logstash/pipeline/*.conf
 log.level: info
 EOF
 
-# Pipeline configuration
+log_info "Creating Logstash pipeline for firewall logs..."
 cat << 'EOF' > ./logstash/pipeline/firewall.conf
 input {
   beats {
@@ -425,9 +472,20 @@ output {
   }
 }
 EOF
-
 log_ok "Logstash configuration created."
 
+echo ""
+log_ok "Creation of required Files completed."
+
+
+log_subsection "SECTION 3: Building Webserver Docker Image"
+
+log_info "Building Webserver-waf-proxy Docker image...(this may take a minute)"
+sudo docker build -t webserver-waf-proxy ./webserver-details
+log_ok "Webserver-waf-proxy Docker image built."
+
+
+log_section "SECTION 4: Deploy Containerlab Topology and Configure Nodes"
 # =========================
 # Create topology file
 # (unchanged, benutze deine bestehende Topologie)
@@ -505,7 +563,6 @@ topology:
         POSTGRES_PASSWORD: strongpassword
         POSTGRES_DB: mydatabase
       binds:
-        - ./dbdata:/var/lib/postgresql/data
         - ./db-init:/docker-entrypoint-initdb.d:ro
       ports:
         - "3636:5432"   
@@ -573,7 +630,7 @@ topology:
         - NET_ADMIN
     External_FW:
       kind: linux
-      image: ubuntu:latest
+      image: debian:bookworm
       type: host
       group: firewall
       cap-add:
@@ -626,13 +683,9 @@ topology:
     - endpoints: ["SIEM_FW:eth5", "kibana:eth2"]
     - endpoints: ["Admin_PC:eth1", "SIEM_FW:eth6"]
 EOF
+
 log_ok "Topology file '${file_name}' created successfully"
 
-# =========================
-# Prepare database directories
-# =========================
-mkdir -p ./dbdata
-sudo chmod 0777 ./dbdata
 
 # =========================
 # Deploy containerlab
@@ -641,103 +694,30 @@ log_info "Deploying containerlab..."
 sudo containerlab deploy --reconfigure --topo "$file_name"
 log_ok "Containerlab deployed"
 
+echo ""
+log_ok "Containerlab topology deployed successfully"
+
 # =========================
 # Wait for Elasticsearch to be ready
 # =========================
+log_subsection "SECTION 5: Wait for Elasticsearch to be ready"
 log_info "Waiting for Elasticsearch to be ready (this may take a couple of minutes)..."
 until sudo docker exec clab-MaJuVi-elasticsearch curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green"'; do
   sudo docker exec clab-MaJuVi-elasticsearch curl -s http://localhost:9200/_cluster/health || true
-  sleep 5
+  sleep 2
 done
+
+echo ""
 log_ok "Elasticsearch cluster reports green"
 
 
 
-# =========================
-# Configure Admin_FW (SIEM Gateway)
-# =========================
-log_info "Configuring SIEM_FW..."
 
-sudo docker exec -i clab-MaJuVi-SIEM_FW bash <<'EOF'
-set -e
-apt-get update -qq 2>&1 | tail -5
-apt-get install -y --no-install-recommends \
-    iptables \
-    iproute2 \
-    iputils-ping \
-    2>&1 | tail -10
-
-echo "Configuring SIEM_FW interfaces and routing..."
-
-# ===== KORRIGIERT: Separate Subnetze für jeden Link =====
-ip addr add 10.0.3.1/30 dev eth1 || true     # zu Internal_FW  (.1/30 = .0-.3)
-ip addr add 10.0.3.5/30 dev eth2 || true     # zu External_FW  (.5/30 = .4-.7)
-ip addr add 10.0.3.9/30 dev eth3 || true     # zu Logstash     (.9/30 = .8-.11)
-ip addr add 10.0.3.13/30 dev eth4 || true    # zu Elasticsearch (.13/30 = .12-.15)
-ip addr add 10.0.3.17/30 dev eth5 || true    # zu Kibana       (.17/30 = .16-.19)
-ip addr add 10.0.3.21/30 dev eth6 || true    # zu Admin_PC     (.21/30 = .20-.23)
-
-# Interfaces aktivieren
-ip link set eth1 up
-ip link set eth2 up
-ip link set eth3 up
-ip link set eth4 up
-ip link set eth5 up
-ip link set eth6 up
-
-# IP Forwarding aktivieren
-echo 1 > /proc/sys/net/ipv4/ip_forward
-
-# Disable ICMP redirects
-sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1
-sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1
-
-# Disable rp_filter
-sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
-sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
-
-# Flush all rules
-iptables -F
-iptables -t nat -F
-iptables -t mangle -F
-iptables -X 2>/dev/null || true
-
-# Set all policies to ACCEPT (SIEM gateway erlaubt alles)
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-
-echo "SIEM_FW configured successfully"
-EOF
-log_ok "SIEM_FW configured to ACCEPT ALL"
-
-# =========================
-# Configure Logstash
-# =========================
-log_info "Configuring Logstash"
-sudo docker exec -u 0 -i clab-MaJuVi-logstash bash <<'EOF'
-set -e
-apt-get update -qq && apt-get install -y iproute2 iputils-ping -qq
-# ===== KORRIGIERT: Passendes Subnetz =====
-ip addr add 10.0.3.10/30 dev eth1 || true    # zu SIEM_FW (.10 in .8-.11 subnet)
-ip addr add 10.0.3.25/30 dev eth2 || true    # zu Elasticsearch (.25 in .24-.27)
-ip link set eth1 up
-ip link set eth2 up
-
-# Default Gateway über SIEM_FW (KORRIGIERT!)
-ip route replace default via 10.0.3.9 dev eth1 || true
-EOF
-log_ok "Logstash configured"
-
-
-log_info "Configuring Internal Firewall with NFLOG (only working method)"
+log_section "SECTION 6: Configure Internal and External Firewall"
+log_step "1/2" "Configuring Internal Firewall..."
+log_info "Configuring Internal Firewall"
 sudo docker exec -i clab-MaJuVi-Internal_FW bash <<'EOF'
 set -e
-
-echo "=========================================="
-echo "Internal Firewall Setup with NFLOG"
-echo "=========================================="
-echo ""
 
 # ============================================
 # Install packages
@@ -1091,7 +1071,8 @@ echo ""
 echo "=========================================="
 
 EOF
-log_ok "Internal Firewall configured with NFLOG logging"
+
+log_ok "Internal Firewall configured"
 
 
 # =========================
@@ -1100,14 +1081,10 @@ log_ok "Internal Firewall configured with NFLOG logging"
 # - DMZ -> Internet erlaubt
 # - Internet -> DMZ/Internal (NEW) explicit DROP
 # =========================
-log_info "Configuring External Firewall with NFLOG logging"
+log_step "2/2" "Configuring External Firewall..."
+log_info "Configuring External Firewall"
 sudo docker exec -i clab-MaJuVi-External_FW bash <<'EOF'
 set -e
-
-echo "=========================================="
-echo "External Firewall Setup with NFLOG"
-echo "=========================================="
-echo ""
 
 # ============================================
 # Install packages
@@ -1476,26 +1453,35 @@ echo ""
 echo "=========================================="
 
 EOF
-log_ok "External Firewall configured with NFLOG logging"
+log_ok "External Firewall configured"
 
+log_ok "Configuration of Firewalls completed"
+
+log_section "SECTION 7: Configuring Internal Hosts and Switches..."
 # =========================
 # Internal Clients (IP + default route)
 # =========================
+log_step "1/2" "Configuring Internal Clients..."
 log_info "Configuring Internal Clients..."
 sudo docker exec -i clab-MaJuVi-Internal_Client1 sh <<EOF
+apk add --no-cache curl >/dev/null 2>&1 || true
 echo '172.168.2.1    internet' >> /etc/hosts
 ip addr add ${Internal_Client1_ip} dev eth1 || true
 ip link set eth1 up
 ip route replace default via 192.168.10.1 || true
 EOF
+
 sudo docker exec -i clab-MaJuVi-Internal_Client2 sh <<EOF
+apk add --no-cache curl >/dev/null 2>&1 || true
 echo '172.168.2.1    internet' >> /etc/hosts
 ip addr add ${Internal_Client2_ip} dev eth1 || true
 ip link set eth1 up
 ip route replace default via 192.168.10.1 || true
 EOF
+
 log_ok "Internal Clients configured"
 
+log_step "2/2" "Configuring Internal Switch..."
 # =========================
 # Internal Switch config
 # =========================
@@ -1515,10 +1501,16 @@ EOF
 
 log_ok "Internal Switch configured"
 
+echo ""
+log_ok "Internal Hosts and Switches configured"
+
+
+log_section "SECTION 8: Configuring DMZ..."
 # =========================
 # DMZ Switch config
 # =========================
-log_info "Konfiguriere DMZ Switch (br0) ..."
+log_step "1/3" "Configuring DMZ Switch..."
+log_info "Configurating DMZ Switch"
 sudo docker exec -i clab-MaJuVi-DMZ_Switch sh <<'EOF'
 set -e
 apk add --no-cache iproute2 bridge-utils >/dev/null 2>&1 || true
@@ -1533,11 +1525,13 @@ ip link set eth2 up
 ip link set eth3 up
 #ip link set eth4 up
 EOF
-log_ok "DMZ Switch konfiguriert"
+
+log_ok "DMZ Switch configured"
 
 # =========================
 # Database config
 # =========================
+log_step "2/3" "Configuring Database..."
 log_info "Configuring Database"
 sudo docker exec -i clab-MaJuVi-Database sh <<'EOF'
 set -e
@@ -1552,11 +1546,13 @@ ip addr add 10.0.2.10/24 dev eth1 || true
 ip link set eth1 up
 ip route replace default via 10.0.2.1 || true
 EOF
+
 log_ok "Database configured"
 
 # =========================
 # Webserver config
 # =========================
+log_step "3/3" "Configuring Webserver..."
 log_info "Configuring Webserver"
 sudo docker exec -i --user root clab-MaJuVi-Web_Proxy_WAF sh <<'EOF'
 set -e
@@ -1566,8 +1562,47 @@ ip addr add 10.0.2.30/24 dev eth1 || true
 ip link set eth1 up
 ip route replace default via 10.0.2.1 || true
 EOF
+
 log_ok "Webserver configured"
 
+echo ""
+log_ok "DMZ configured"
+
+log_section "SECTION 9: Configuring Router-edge..."
+# router-edge configuration
+log_info "Configuring router-edge"
+sudo docker exec -i clab-MaJuVi-router-edge sh <<'EOF'
+set -e
+# Interfaces
+ip addr add 172.168.2.2/30 dev eth1  # from router-internet
+ip addr add 172.168.3.1/30 dev eth2  # to External_FW
+ip link set eth1 up
+ip link set eth2 up
+
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Flush rules
+iptables -F
+iptables -P FORWARD DROP
+iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# Allow NEW traffic to/from Internet via eth1/eth2
+iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j ACCEPT
+
+# --- Prevent Internal → Attacker (eth1) directly
+iptables -I FORWARD 1 -s 192.168.10.0/24 -d 200.168.1.0/24 -m conntrack --ctstate NEW -j DROP
+
+# Routing
+ip route replace 10.0.2.0/24 via 172.168.3.2
+ip route replace 192.168.10.0/24 via 172.168.3.2
+ip route replace 200.168.1.0/24 via 172.168.2.1
+EOF
+
+log_ok "router-edge configured"
+
+log_section "SECTION 10: Configuring Attacker and router-internet..."
+log_step "1/2" "Configuring Attacker..."
 # =========================
 # Attacker host config (netzwerkseitig)
 # =========================
@@ -1578,6 +1613,7 @@ ip addr add 200.168.1.10/24 dev eth1 || true
 ip link set eth1 up
 ip route replace default via 200.168.1.1 || true
 EOF
+
 log_ok "Attacker configured"
 
 # =========================
@@ -1585,6 +1621,7 @@ log_ok "Attacker configured"
 # - Drop NEW destined to DMZ/INTERNAL from Attacker link (eth1)
 # - Otherwise allow established/related
 # =========================
+log_step "2/2" "Configuring router-internet..."
 log_info "Configuring router-internet"
 sudo docker exec -i clab-MaJuVi-router-internet sh <<'EOF'
 set -e
@@ -1632,44 +1669,95 @@ ip route replace 192.168.10.0/24 via 172.168.2.2 || true
 ip route replace 200.168.1.0/24 dev eth1 || true
 ip route replace 172.168.3.2 via 172.168.2.2 dev eth2
 EOF
+
 log_ok "router-internet configured"
 
+echo ""
+log_ok "Attacker and router-internet configured"
 
+
+log_section "SECTION 11: Configuring SIEM components..."
 # =========================
-# router-edge configuration
-# - make sure it routes DMZ and internal networks via External_FW
+# Configure Admin_FW (SIEM Gateway)
 # =========================
-# router-edge configuration
-log_info "Configuring router-edge"
-sudo docker exec -i clab-MaJuVi-router-edge sh <<'EOF'
+log_step "1/5" "Configuring SIEM_FW..."
+log_info "Configuring SIEM_FW..."
+
+sudo docker exec -i clab-MaJuVi-SIEM_FW bash <<'EOF'
 set -e
-# Interfaces
-ip addr add 172.168.2.2/30 dev eth1  # from router-internet
-ip addr add 172.168.3.1/30 dev eth2  # to External_FW
+apt-get update -qq 2>&1 | tail -5
+apt-get install -y --no-install-recommends \
+    iptables \
+    iproute2 \
+    iputils-ping \
+    2>&1 | tail -10
+
+echo "Configuring SIEM_FW interfaces and routing..."
+
+# ===== KORRIGIERT: Separate Subnetze für jeden Link =====
+ip addr add 10.0.3.1/30 dev eth1 || true     # zu Internal_FW  (.1/30 = .0-.3)
+ip addr add 10.0.3.5/30 dev eth2 || true     # zu External_FW  (.5/30 = .4-.7)
+ip addr add 10.0.3.9/30 dev eth3 || true     # zu Logstash     (.9/30 = .8-.11)
+ip addr add 10.0.3.13/30 dev eth4 || true    # zu Elasticsearch (.13/30 = .12-.15)
+ip addr add 10.0.3.17/30 dev eth5 || true    # zu Kibana       (.17/30 = .16-.19)
+ip addr add 10.0.3.21/30 dev eth6 || true    # zu Admin_PC     (.21/30 = .20-.23)
+
+# Interfaces aktivieren
+ip link set eth1 up
+ip link set eth2 up
+ip link set eth3 up
+ip link set eth4 up
+ip link set eth5 up
+ip link set eth6 up
+
+# IP Forwarding aktivieren
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Disable ICMP redirects
+sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1
+
+# Disable rp_filter
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
+
+# Flush all rules
+iptables -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -X 2>/dev/null || true
+
+# Set all policies to ACCEPT (SIEM gateway erlaubt alles)
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+echo "SIEM_FW configured successfully"
+EOF
+
+log_ok "SIEM_FW configured to ACCEPT ALL"
+
+log_step "2/5" "Configuring Logstash..."
+# =========================
+# Configure Logstash
+# =========================
+log_info "Configuring Logstash"
+sudo docker exec -u 0 -i clab-MaJuVi-logstash bash <<'EOF'
+set -e
+apt-get update -qq && apt-get install -y iproute2 iputils-ping -qq
+# ===== KORRIGIERT: Passendes Subnetz =====
+ip addr add 10.0.3.10/30 dev eth1 || true    # zu SIEM_FW (.10 in .8-.11 subnet)
+ip addr add 10.0.3.25/30 dev eth2 || true    # zu Elasticsearch (.25 in .24-.27)
 ip link set eth1 up
 ip link set eth2 up
 
-echo 1 > /proc/sys/net/ipv4/ip_forward
-
-# Flush rules
-iptables -F
-iptables -P FORWARD DROP
-iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-
-# Allow NEW traffic to/from Internet via eth1/eth2
-iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j ACCEPT
-
-# --- Prevent Internal → Attacker (eth1) directly
-iptables -I FORWARD 1 -s 192.168.10.0/24 -d 200.168.1.0/24 -m conntrack --ctstate NEW -j DROP
-
-# Routing
-ip route replace 10.0.2.0/24 via 172.168.3.2
-ip route replace 192.168.10.0/24 via 172.168.3.2
-ip route replace 200.168.1.0/24 via 172.168.2.1
+# Default Gateway über SIEM_FW (KORRIGIERT!)
+ip route replace default via 10.0.3.9 dev eth1 || true
 EOF
-log_ok "router-edge configured"
 
+log_ok "Logstash configured"
+
+log_step "3/5" "Configuring Internal_FW..."
 # =========================
 # Configure Admin_PC
 # =========================
@@ -1684,16 +1772,14 @@ ip link set eth1 up
 # Default Gateway über SIEM_FW (KORRIGIERT!)
 ip route replace default via 10.0.3.21 || true
 EOF
+
 log_ok "Admin_PC configured"
 
 
-
 # =========================
 # Configure Elasticsearch
 # =========================
-# =========================
-# Configure Elasticsearch
-# =========================
+log_step "4/5" "Configuring Elasticsearch..."
 log_info "Configuring Elasticsearch"
 sudo docker exec -u 0 -i clab-MaJuVi-elasticsearch sh <<'EOF'
 set -e
@@ -1708,11 +1794,13 @@ ip link set eth2 up
 ip link set eth3 up
 ip route replace default via 10.0.3.13 dev eth3 || true
 EOF
+
 log_ok "Elasticsearch configured"
 
 # =========================
 # Configure Kibana
 # =========================
+log_step "5/5" "Configuring Kibana..."
 log_info "Configuring Kibana"
 sudo docker exec -u 0 -i clab-MaJuVi-kibana bash <<'EOF'
 set -e
@@ -1729,6 +1817,11 @@ ip route replace default via 10.0.3.17 dev eth2 || true
 # Spezifische Route zu Elasticsearch über eth1 (KORRIGIERT!)
 ip route add 10.0.3.26/32 via 10.0.3.29 dev eth1 || true
 EOF
+
 log_ok "Kibana configured"
 
-log_ok "### Lab deployment and configuration completed"
+echo ""
+log_ok "SIEM components configured"
+
+log_section "SECTION 12: Lab deployment and configuration completed"
+log_ok "Lab deployment and configuration completed"
