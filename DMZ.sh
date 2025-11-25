@@ -1681,7 +1681,7 @@ log_section "SECTION 11: Configuring SIEM components..."
 # Configure Admin_FW (SIEM Gateway)
 # =========================
 log_step "1/5" "Configuring SIEM_FW..."
-log_info "Configuring SIEM_FW..."
+log_info "Configuring SIEM_FW with restrictive firewall rules..."
 
 sudo docker exec -i clab-MaJuVi-SIEM_FW bash <<'EOF'
 set -e
@@ -1694,7 +1694,7 @@ apt-get install -y --no-install-recommends \
 
 echo "Configuring SIEM_FW interfaces and routing..."
 
-# ===== KORRIGIERT: Separate Subnetze für jeden Link =====
+# Separate /30 Subnetze für jeden Link
 ip addr add 10.0.3.1/30 dev eth1 || true     # zu Internal_FW  (.1/30 = .0-.3)
 ip addr add 10.0.3.5/30 dev eth2 || true     # zu External_FW  (.5/30 = .4-.7)
 ip addr add 10.0.3.9/30 dev eth3 || true     # zu Logstash     (.9/30 = .8-.11)
@@ -1717,7 +1717,7 @@ echo 1 > /proc/sys/net/ipv4/ip_forward
 sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1
 sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1
 
-# Disable rp_filter
+# Disable rp_filter für flexible Routing
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
 
@@ -1727,15 +1727,49 @@ iptables -t nat -F
 iptables -t mangle -F
 iptables -X 2>/dev/null || true
 
-# Set all policies to ACCEPT (SIEM gateway erlaubt alles)
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
+# ==============================================
+# RESTRICTIVE FIREWALL POLICY (Zero-Trust SIEM)
+# ==============================================
+
+# Default DROP policies
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 
-echo "SIEM_FW configured successfully"
+# INPUT Chain - allow management
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACCEPT
+
+# FORWARD Chain - Explicit Allow Rules
+
+# 1. Admin_PC → Kibana (Port 5601)
+iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.18 -p tcp --dport 5601 -m conntrack --ctstate NEW -j ACCEPT
+
+# 2. Admin_PC → Elasticsearch (Port 9200) - direkte API-Abfragen
+iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.14 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+
+# 3. Firewall-Filebeats → Logstash (Port 5044)
+iptables -A FORWARD -s 10.0.3.2 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT  # Internal_FW
+iptables -A FORWARD -s 10.0.3.6 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT  # External_FW
+
+# 4. Logstash → Elasticsearch (Port 9200)
+iptables -A FORWARD -s 10.0.3.10 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+
+# 5. Kibana → Elasticsearch (Port 9200)
+iptables -A FORWARD -s 10.0.3.30 -d 10.0.3.29 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+
+# 6. Established/Related connections (return traffic)
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# 7. Log dropped packets (optional, für Debugging)
+iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "[SIEM_FW-DROP] " --log-level 7
+
+echo "SIEM_FW configured with restrictive micro-segmentation rules"
 EOF
 
-log_ok "SIEM_FW configured to ACCEPT ALL"
+log_ok "SIEM_FW configured with Zero-Trust policy"
 
 log_step "2/5" "Configuring Logstash..."
 # =========================
