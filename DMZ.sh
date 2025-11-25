@@ -565,7 +565,7 @@ topology:
       image: docker.elastic.co/kibana/kibana:8.10.1
       group: siem
       env:
-        ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+        ELASTICSEARCH_HOSTS: "http://10.0.3.29:9200"
         SERVER_NAME: "kibana"
       ports:
         - "5601:5601"
