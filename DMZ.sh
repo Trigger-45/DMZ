@@ -2,9 +2,6 @@
 set -euo pipefail
 
 # =========================
-# Terminal Color Setup
-# =========================
-# =========================
 # Terminal Color & Logging Setup
 # =========================
 RED="\e[31m"
@@ -21,7 +18,7 @@ get_timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
 }
 
-# Verbesserte Log-Funktionen
+# Advanced log functions
 log_section() { 
     echo ""
     echo -e "${BOLD}${CYAN}========================================${ENDCOLOR}"
@@ -101,6 +98,7 @@ sudo chmod -R 0777 ./logstash
 mkdir -p ./webserver-details
 mkdir -p ./db-init
 
+# Create Database
 log_step "1/3" "Creating Database initialization SQL..."
 
 
@@ -150,18 +148,16 @@ EOF
 
 log_ok "Database initialization SQL created."
 
-# =========================
 # Create Webserver
-# =========================
 log_step "2/3" "Creating Webserver Flask app and Dockerfile..."
 
 log_info "Creating start.sh script..."
 cat << 'EOF' > ./webserver-details/start.sh
 #!/bin/sh
-# Starte Flask App im Hintergrund
+# Starting Flask App in the background
 python3 /app/app.py &
 
-# Starte Nginx im Vordergrund
+# Starting Nginx in the foreground
 nginx -g "daemon off;"
 EOF
 
@@ -181,7 +177,7 @@ http {
     default_type  application/octet-stream;
 
     upstream flaskapp {
-        server 127.0.0.1:8080;  # Flask läuft lokal im Container auf 8080
+        server 127.0.0.1:8080;  # Flask runs locally in the container on 8080
     }
 
     server {
@@ -476,19 +472,21 @@ log_ok "Logstash configuration created."
 echo ""
 log_ok "Creation of required Files completed."
 
-
+# =========================
+# SECTION 3: Building Webserver Docker Image
+# =========================
 log_subsection "SECTION 3: Building Webserver Docker Image"
 
 log_info "Building Webserver-waf-proxy Docker image...(this may take a minute)"
 sudo docker build -t webserver-waf-proxy ./webserver-details
 log_ok "Webserver-waf-proxy Docker image built."
 
-
+# =========================
+# SECTION 4: Deploy Containerlab Topology and Configure Nodes
+# =========================
 log_section "SECTION 4: Deploy Containerlab Topology and Configure Nodes"
-# =========================
+
 # Create topology file
-# (unchanged, benutze deine bestehende Topologie)
-# =========================
 log_info "Creating topology file: ${file_name}"
 cat << 'EOF' > "$file_name"
 name: MaJuVi
@@ -689,9 +687,7 @@ EOF
 log_ok "Topology file '${file_name}' created successfully"
 
 
-# =========================
 # Deploy containerlab
-# =========================
 log_info "Deploying containerlab..."
 sudo containerlab deploy --reconfigure --topo "$file_name"
 log_ok "Containerlab deployed"
@@ -700,7 +696,7 @@ echo ""
 log_ok "Containerlab topology deployed successfully"
 
 # =========================
-# Wait for Elasticsearch to be ready
+# SECTION 5: Wait for Elasticsearch to be ready
 # =========================
 log_subsection "SECTION 5: Wait for Elasticsearch to be ready"
 log_info "Waiting for Elasticsearch to be ready (this may take a couple of minutes)..."
@@ -712,9 +708,9 @@ done
 echo ""
 log_ok "Elasticsearch cluster reports green"
 
-
-
-
+# =========================
+# SECTION 6: Configure Internal and External Firewall
+# =========================
 log_section "SECTION 6: Configure Internal and External Firewall"
 log_step "1/2" "Configuring Internal Firewall..."
 log_info "Configuring Internal Firewall"
@@ -754,22 +750,18 @@ apt-get install -y filebeat 2>&1 | tail -10
 
 
 
-# ============================================
 # Switch to iptables-legacy
-# ============================================
 echo "[3/7] Switching to iptables-legacy..."
 update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
 update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 echo "[OK] Using: $(iptables --version)"
 
-# ============================================
 # Configure network interfaces
-# ============================================
 echo "[4/7] Configuring network interfaces..."
 ip addr add 192.168.10.1/24 dev eth1 2>/dev/null || true   # Internal
 ip addr add 10.0.2.1/24 dev eth2 2>/dev/null || true       # DMZ
 ip addr add 192.168.20.1/24 dev eth3 2>/dev/null || true   # To External_FW
-ip addr add 10.0.3.2/30 dev eth4 || true     # zu SIEM_FW (.2 in .0-.3)
+ip addr add 10.0.3.2/30 dev eth4 || true                   # To SIEM_FW (.2 in .0-.3)
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth3 up
@@ -777,9 +769,7 @@ ip link set eth4 up
 echo 1 > /proc/sys/net/ipv4/ip_forward
 echo "[OK] Network configured"
 
-# ============================================
 # Configure ulogd2 for NFLOG
-# ============================================
 echo "[5/7] Configuring ulogd2..."
 mkdir -p /var/log/firewall /var/log/ulogd /etc/ulogd
 
@@ -856,9 +846,7 @@ FILEBEAT_PID=$!
 sleep 2
 
 
-# ============================================
 # Configure iptables with NFLOG
-# ============================================
 echo "[6/7] Configuring iptables with NFLOG..."
 
 # Flush existing rules
@@ -871,9 +859,7 @@ iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 
-# ============================================
 # INPUT Chain
-# ============================================
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACCEPT
@@ -885,10 +871,7 @@ iptables -A INPUT -m limit --limit 5/min -j NFLOG \
   --nflog-prefix "[INT-FW-INPUT-DROP] " \
   --nflog-group 0
 
-# ============================================
 # FORWARD Chain
-# ============================================
-
 # Invalid packets
 iptables -N LOG_INVALID
 iptables -A LOG_INVALID -m limit --limit 10/min --limit-burst 20 -j NFLOG \
@@ -924,18 +907,14 @@ iptables -A FORWARD -m limit --limit 5/min -j NFLOG \
   --nflog-prefix "[INT-FW-FORWARD-DROP] " \
   --nflog-group 0
 
-# ============================================
 # Routing
-# ============================================
 ip route replace 172.168.2.0/30 via 192.168.20.2 dev eth3 2>/dev/null || true
 ip route replace 172.168.3.0/30 via 192.168.20.2 dev eth3 2>/dev/null || true
 ip route add 10.0.3.0/24 via 10.0.3.1 dev eth4 || true
 
 echo "[OK] iptables rules configured"
 
-# ============================================
 # Create helper scripts
-# ============================================
 echo "[7/7] Creating helper scripts..."
 
 cat > /usr/local/bin/fw-stats << 'STATS_SCRIPT'
@@ -1031,9 +1010,7 @@ chmod +x /usr/local/bin/fw-search
 
 echo "[OK] Helper scripts created"
 
-# ============================================
 # Final verification
-# ============================================
 echo ""
 echo "=========================================="
 echo "  Internal Firewall Configuration Complete"
@@ -1076,21 +1053,12 @@ EOF
 
 log_ok "Internal Firewall configured"
 
-
-# =========================
-# Firewall: External_FW
-# - NAT (MASQUERADE) für ausgehenden Verkehr zur 'Internet'-Schnittstelle (eth2)
-# - DMZ -> Internet erlaubt
-# - Internet -> DMZ/Internal (NEW) explicit DROP
-# =========================
 log_step "2/2" "Configuring External Firewall..."
 log_info "Configuring External Firewall"
 sudo docker exec -i clab-MaJuVi-External_FW bash <<'EOF'
 set -e
 
-# ============================================
 # Install packages
-# ============================================
 echo "[1/7] Installing packages..."
 export DEBIAN_FRONTEND=noninteractive
 
@@ -1120,22 +1088,18 @@ echo "deb https://artifacts.elastic.co/packages/8.x/apt stable main" | tee -a /e
 apt-get update -qq
 apt-get install -y filebeat 2>&1 | tail -10
 
-# ============================================
 # Switch to iptables-legacy
-# ============================================
 echo "[3/7] Switching to iptables-legacy..."
 update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
 update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 echo "[OK] Using: $(iptables --version)"
 
-# ============================================
 # Configure network interfaces
-# ============================================
 echo "[4/7] Configuring network interfaces..."
 ip addr add 10.0.2.2/24 dev eth1 2>/dev/null || true      # DMZ
 ip addr add 172.168.3.2/30 dev eth2 2>/dev/null || true   # Router Edge
 ip addr add 192.168.20.2/24 dev eth4 2>/dev/null || true  # Internal_FW link
-ip addr add 10.0.3.6/30 dev eth3 || true     # zu SIEM_FW (.6 in .4-.7)
+ip addr add 10.0.3.6/30 dev eth3 || true                  # to SIEM_FW (.6 in .4-.7)
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth4 up
@@ -1143,9 +1107,7 @@ ip link set eth4 up
 echo 1 > /proc/sys/net/ipv4/ip_forward
 echo "[OK] Network configured"
 
-# ============================================
 # Configure ulogd2 for NFLOG
-# ============================================
 echo "[5/7] Configuring ulogd2..."
 mkdir -p /var/log/firewall /var/log/ulogd /etc/ulogd
 
@@ -1221,9 +1183,7 @@ nohup filebeat -e -c /etc/filebeat/filebeat.yml > /var/log/filebeat.log 2>&1 &
 FILEBEAT_PID=$!
 sleep 2
 
-# ============================================
 # Configure iptables with NFLOG
-# ============================================
 echo "[6/7] Configuring iptables with NFLOG..."
 
 # Flush existing rules
@@ -1236,9 +1196,7 @@ iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 
-# ============================================
 # INPUT Chain
-# ============================================
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACCEPT
@@ -1250,10 +1208,7 @@ iptables -A INPUT -m limit --limit 5/min -j NFLOG \
   --nflog-prefix "[EXT-FW-INPUT-DROP] " \
   --nflog-group 0
 
-# ============================================
 # FORWARD Chain
-# ============================================
-
 # Invalid packets
 iptables -N LOG_INVALID
 iptables -A LOG_INVALID -m limit --limit 10/min --limit-burst 20 -j NFLOG \
@@ -1265,8 +1220,8 @@ iptables -A FORWARD -m conntrack --ctstate INVALID -j LOG_INVALID
 # Established/Related
 iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# *** NEU: Port Forwarding für Webserver (Port 80) ***
-# Erlaube weitergeleiteten Traffic zu DMZ Webserver
+# Port Forwarding for Webserver (Port 80)
+# Allow forwarded traffic to DMZ webserver
 iptables -A FORWARD -i eth2 -o eth1 -d 10.0.2.30 -p tcp --dport 80 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
   --nflog-prefix "[EXT-FW-INET-TO-WEB-ALLOW] " \
   --nflog-group 0
@@ -1284,7 +1239,7 @@ iptables -A FORWARD -i eth4 -o eth2 -m conntrack --ctstate NEW -m limit --limit 
   --nflog-group 0
 iptables -A FORWARD -i eth4 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
 
-# Internet → DMZ (andere Ports weiterhin geblockt)
+# Internet → DMZ (other ports are being blocked)
 iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
   --nflog-prefix "[EXT-FW-INET-TO-DMZ-DROP] " \
   --nflog-group 0
@@ -1301,12 +1256,10 @@ iptables -A FORWARD -m limit --limit 5/min -j NFLOG \
   --nflog-prefix "[EXT-FW-FORWARD-DROP] " \
   --nflog-group 0
 
-# ============================================
 # NAT Configuration
-# ============================================
 
-# *** NEU: DNAT für eingehenden Web-Traffic (Port 80) ***
-# Alle Anfragen auf Port 80 an eth2 (externe Schnittstelle) werden zu 10.0.2.30:80 weitergeleitet
+# DNAT for incoming Web-Traffic (Port 80)
+# All requests on port 80 to eth2 (external interface) are forwarded to 10.0.2.30:80
 iptables -t nat -A PREROUTING -i eth2 -p tcp --dport 80 -j DNAT --to-destination 10.0.2.30:80
 
 # MASQUERADE traffic that leaves via eth2 (towards router-edge/internet)
@@ -1316,16 +1269,12 @@ iptables -t nat -A POSTROUTING -o eth2 -s 192.168.20.0/24 -j MASQUERADE
 
 echo "[OK] iptables rules and NAT configured"
 
-# ============================================
 # Routing
-# ============================================
 ip route replace 172.168.2.0/30 via 172.168.3.1 dev eth2 2>/dev/null || true
 ip route replace 192.168.10.0/24 via 192.168.20.1 dev eth4 2>/dev/null || true
 ip route add 10.0.3.0/24 via 10.0.3.5 dev eth3 || true
 
-# ============================================
 # Create helper scripts
-# ============================================
 echo "[7/7] Creating helper scripts..."
 
 cat > /usr/local/bin/fw-stats << 'STATS_SCRIPT'
@@ -1425,9 +1374,7 @@ chmod +x /usr/local/bin/fw-search
 
 echo "[OK] Helper scripts created"
 
-# ============================================
 # Final verification
-# ============================================
 echo ""
 echo "=========================================="
 echo "  External Firewall Configuration Complete"
@@ -1471,10 +1418,12 @@ log_ok "External Firewall configured"
 
 log_ok "Configuration of Firewalls completed"
 
+# =========================
+# SECTION 7: Configuring Internal Hosts and Switches
+# =========================
 log_section "SECTION 7: Configuring Internal Hosts and Switches..."
-# =========================
+
 # Internal Clients (IP + default route)
-# =========================
 log_step "1/2" "Configuring Internal Clients..."
 log_info "Configuring Internal Clients..."
 sudo docker exec -i clab-MaJuVi-Internal_Client1 sh <<EOF
@@ -1496,9 +1445,8 @@ EOF
 log_ok "Internal Clients configured"
 
 log_step "2/2" "Configuring Internal Switch..."
-# =========================
+
 # Internal Switch config
-# =========================
 log_info "Configurating Internal Switch"
 sudo docker exec -i clab-MaJuVi-Internal_Switch sh <<'EOF'
 set -e
@@ -1518,11 +1466,12 @@ log_ok "Internal Switch configured"
 echo ""
 log_ok "Internal Hosts and Switches configured"
 
-
+# =========================
+# SECTION 8: Configuring DMZ
+# =========================
 log_section "SECTION 8: Configuring DMZ..."
-# =========================
+
 # DMZ Switch config
-# =========================
 log_step "1/3" "Configuring DMZ Switch..."
 log_info "Configurating DMZ Switch"
 sudo docker exec -i clab-MaJuVi-DMZ_Switch sh <<'EOF'
@@ -1542,9 +1491,7 @@ EOF
 
 log_ok "DMZ Switch configured"
 
-# =========================
 # Database config
-# =========================
 log_step "2/3" "Configuring Database..."
 log_info "Configuring Database"
 sudo docker exec -i clab-MaJuVi-Database sh <<'EOF'
@@ -1563,9 +1510,7 @@ EOF
 
 log_ok "Database configured"
 
-# =========================
 # Webserver config
-# =========================
 log_step "3/3" "Configuring Webserver..."
 log_info "Configuring Webserver"
 sudo docker exec -i --user root clab-MaJuVi-Web_Proxy_WAF sh <<'EOF'
@@ -1575,10 +1520,10 @@ apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
 ip addr add 10.0.2.30/24 dev eth1 || true
 ip link set eth1 up
 
-# *** Route für internes Netz über Internal_FW ***
+# Route for internal network via Internal_FW
 ip route add 192.168.10.0/24 via 10.0.2.1 dev eth1 || true
 
-# *** Default Route (Internet) über External_FW ***
+# Default Route (Internet) via External_FW
 ip route replace default via 10.0.2.2 || true
 EOF
 
@@ -1587,6 +1532,9 @@ log_ok "Webserver configured"
 echo ""
 log_ok "DMZ configured"
 
+# =========================
+# SECTION 9: Configuring Router-edge
+# =========================
 log_section "SECTION 9: Configuring Router-edge..."
 # router-edge configuration
 log_info "Configuring router-edge"
@@ -1620,11 +1568,13 @@ EOF
 
 log_ok "router-edge configured"
 
+# =========================
+# SECTION 10: Configuring Attacker and router-internet
+# =========================
 log_section "SECTION 10: Configuring Attacker and router-internet..."
 log_step "1/2" "Configuring Attacker..."
-# =========================
-# Attacker host config (netzwerkseitig)
-# =========================
+
+# Attacker host config
 log_info "Configuring Attacker"
 sudo docker exec -i clab-MaJuVi-Attacker sh <<EOF
 set -e
@@ -1636,11 +1586,7 @@ EOF
 
 log_ok "Attacker configured"
 
-# =========================
-# router-internet configuration
-# - Drop NEW destined to DMZ/INTERNAL from Attacker link (eth1)
-# - Otherwise allow established/related
-# =========================
+# Router-Internet configuration
 log_step "2/2" "Configuring router-internet..."
 log_info "Configuring router-internet"
 sudo docker exec -i clab-MaJuVi-router-internet sh <<'EOF'
@@ -1660,10 +1606,10 @@ ip addr add 172.168.2.1/30 dev eth2 || true
 ip link set eth1 up
 ip link set eth2 up
 
-# forwarding aktivieren
+# Activate forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward || true
 
-# Disable rp_filter (testweise, vermeidet unerwartete Drops)
+# Disable rp_filter
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.conf.eth1.rp_filter=0 >/dev/null 2>&1 || true
@@ -1680,10 +1626,10 @@ iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j ACCEPT
 # Explicitly drop any NEW from Attacker side (eth1) aimed at Internal (192.168.10.0/24)
 iptables -A FORWARD -i eth1 -o eth2 -d 192.168.10.0/24 -m conntrack --ctstate NEW -j DROP
 
-# *** GEÄNDERT: Erlaube Port 80 zur External_FW IP (172.168.3.2) ***
+# Changed: Allow port 80 to External_FW IP (172.168.3.2)
 iptables -A FORWARD -i eth1 -o eth2 -d 172.168.3.2 -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
 
-# Alle anderen NEW Verbindungen zur DMZ blockieren (außer über die Firewall-IP)
+# Block all other NEW connections to the DMZ (except via the Firewall-IP)
 iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.0/24 -m conntrack --ctstate NEW -j DROP
 
 # Ensure routes for lab networks (so router-internet knows how to reach DMZ/Internal)
@@ -1701,13 +1647,12 @@ echo ""
 log_ok "Attacker and router-internet configured"
 
 
-log_section "SECTION 11: Configuring SIEM components..."
-
-log_section "SECTION 11: Configuring SIEM components..."
-
 # =========================
+# SECTION 11: Configuring SIEM components
+# =========================
+log_section "SECTION 11: Configuring SIEM components..."
+
 # Configure SIEM_FW
-# =========================
 log_step "1/5" "Configuring SIEM_FW..."
 log_info "Configuring SIEM_FW with restrictive firewall rules..."
 
@@ -1722,7 +1667,6 @@ apt-get install -y --no-install-recommends \
 
 echo "Configuring SIEM_FW interfaces and routing..."
 
-# Separate /30 Subnetze für jeden Link
 ip addr add 10.0.3.1/30 dev eth1 || true
 ip addr add 10.0.3.5/30 dev eth2 || true
 ip addr add 10.0.3.9/30 dev eth3 || true
@@ -1730,7 +1674,7 @@ ip addr add 10.0.3.13/30 dev eth4 || true
 ip addr add 10.0.3.17/30 dev eth5 || true
 ip addr add 10.0.3.21/30 dev eth6 || true
 
-# Interfaces aktivieren
+# Activate Interfaces
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth3 up
@@ -1738,14 +1682,14 @@ ip link set eth4 up
 ip link set eth5 up
 ip link set eth6 up
 
-# IP Forwarding aktivieren
+# Activate IP Forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
 # Disable ICMP redirects
 sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1
 sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1
 
-# Disable rp_filter für flexible Routing
+# Disable rp_filter for flexible routing
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
 
@@ -1794,9 +1738,7 @@ EOF
 
 log_ok "SIEM_FW configured"
 
-# =========================
 # Configure Logstash
-# =========================
 log_step "2/5" "Configuring Logstash..."
 log_info "Configuring Logstash network via nsenter..."
 
@@ -1813,9 +1755,7 @@ sudo nsenter -t $LOGSTASH_PID -n ip route show || true
 
 log_ok "Logstash configured"
 
-# =========================
 # Configure Admin_PC
-# =========================
 log_step "3/5" "Configuring Admin_PC..."
 log_info "Configuring Admin_PC"
 sudo docker exec -i clab-MaJuVi-Admin_PC sh <<EOF
@@ -1828,9 +1768,7 @@ EOF
 
 log_ok "Admin_PC configured"
 
-# =========================
 # Configure Elasticsearch
-# =========================
 log_step "4/5" "Configuring Elasticsearch..."
 log_info "Configuring Elasticsearch network via nsenter..."
 
@@ -1849,9 +1787,7 @@ sudo nsenter -t $ELASTICSEARCH_PID -n ip route show || true
 
 log_ok "Elasticsearch configured"
 
-# =========================
 # Configure Kibana
-# =========================
 log_step "5/5" "Configuring Kibana..."
 log_info "Configuring Kibana network via nsenter..."
 
@@ -1872,5 +1808,8 @@ log_ok "Kibana configured"
 echo ""
 log_ok "SIEM components configured"
 
+# =========================
+# SECTION 12: Lab deployment and configuration completed
+# =========================
 log_section "SECTION 12: Lab deployment and configuration completed"
 log_ok "Lab deployment and configuration completed"
