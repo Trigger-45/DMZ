@@ -623,6 +623,9 @@ topology:
       env:
         ELASTICSEARCH_HOSTS: "http://10.0.3.26:9200"
         SERVER_NAME: "kibana"
+        XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: "a7e4c9f2b8d3e1a6c5f8b2d9e4a7c1f3"
+        XPACK_REPORTING_ENCRYPTIONKEY: "b8f3d2e9a1c7f4e6d3b9a2c8f1e5d7a4"
+        XPACK_SECURITY_ENCRYPTIONKEY: "c1f8e3d7a9b4f2e6c8d1a5f9e2b7c4d3"
       ports:
         - "5601:5601"
       cap-add:
@@ -1262,6 +1265,13 @@ iptables -A FORWARD -m conntrack --ctstate INVALID -j LOG_INVALID
 # Established/Related
 iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
+# *** NEU: Port Forwarding für Webserver (Port 80) ***
+# Erlaube weitergeleiteten Traffic zu DMZ Webserver
+iptables -A FORWARD -i eth2 -o eth1 -d 10.0.2.30 -p tcp --dport 80 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
+  --nflog-prefix "[EXT-FW-INET-TO-WEB-ALLOW] " \
+  --nflog-group 0
+iptables -A FORWARD -i eth2 -o eth1 -d 10.0.2.30 -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+
 # DMZ → Internet (NEW)
 iptables -A FORWARD -i eth1 -o eth2 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
   --nflog-prefix "[EXT-FW-DMZ-TO-INET] " \
@@ -1274,7 +1284,7 @@ iptables -A FORWARD -i eth4 -o eth2 -m conntrack --ctstate NEW -m limit --limit 
   --nflog-group 0
 iptables -A FORWARD -i eth4 -o eth2 -m conntrack --ctstate NEW -j ACCEPT
 
-# Internet → DMZ (blocked NEW connections)
+# Internet → DMZ (andere Ports weiterhin geblockt)
 iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
   --nflog-prefix "[EXT-FW-INET-TO-DMZ-DROP] " \
   --nflog-group 0
@@ -1294,6 +1304,11 @@ iptables -A FORWARD -m limit --limit 5/min -j NFLOG \
 # ============================================
 # NAT Configuration
 # ============================================
+
+# *** NEU: DNAT für eingehenden Web-Traffic (Port 80) ***
+# Alle Anfragen auf Port 80 an eth2 (externe Schnittstelle) werden zu 10.0.2.30:80 weitergeleitet
+iptables -t nat -A PREROUTING -i eth2 -p tcp --dport 80 -j DNAT --to-destination 10.0.2.30:80
+
 # MASQUERADE traffic that leaves via eth2 (towards router-edge/internet)
 iptables -t nat -A POSTROUTING -o eth2 -s 192.168.10.0/24 -j MASQUERADE
 iptables -t nat -A POSTROUTING -o eth2 -s 10.0.2.0/24 -j MASQUERADE
@@ -1559,7 +1574,12 @@ apk add --no-cache iproute2 iputils >/dev/null 2>&1 || true
 
 ip addr add 10.0.2.30/24 dev eth1 || true
 ip link set eth1 up
-ip route replace default via 10.0.2.1 || true
+
+# *** Route für internes Netz über Internal_FW ***
+ip route add 192.168.10.0/24 via 10.0.2.1 dev eth1 || true
+
+# *** Default Route (Internet) über External_FW ***
+ip route replace default via 10.0.2.2 || true
 EOF
 
 log_ok "Webserver configured"
@@ -1608,6 +1628,7 @@ log_step "1/2" "Configuring Attacker..."
 log_info "Configuring Attacker"
 sudo docker exec -i clab-MaJuVi-Attacker sh <<EOF
 set -e
+apk add --no-cache curl >/dev/null 2>&1 || true
 ip addr add 200.168.1.10/24 dev eth1 || true
 ip link set eth1 up
 ip route replace default via 200.168.1.1 || true
@@ -1627,9 +1648,9 @@ set -e
 # ensure tooling
 if command -v apt >/dev/null 2>&1; then
   apt update >/dev/null 2>&1 || true
-  apt install -y iproute2 iputils-ping iptables >/dev/null 2>&1 || true
+  apt install -y iproute2 iputils-ping iptables curl >/dev/null 2>&1 || true
 elif command -v apk >/dev/null 2>&1; then
-  apk add --no-cache iproute2 iputils iptables >/dev/null 2>&1 || true
+  apk add --no-cache iproute2 iputils iptables curl >/dev/null 2>&1 || true
 fi
 
 # Interfaces: eth1 <-> Attacker, eth2 <-> router-edge
@@ -1656,9 +1677,14 @@ iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 # Allow router-side initiated NEW connections to Attacker (eth2 -> eth1)
 iptables -A FORWARD -i eth2 -o eth1 -m conntrack --ctstate NEW -j ACCEPT
 
-# Explicitly drop any NEW from Attacker side (eth1) aimed at DMZ (10.0.2.0/24) or Internal (192.168.10.0/24)
-iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.0/24 -m conntrack --ctstate NEW -j DROP
+# Explicitly drop any NEW from Attacker side (eth1) aimed at Internal (192.168.10.0/24)
 iptables -A FORWARD -i eth1 -o eth2 -d 192.168.10.0/24 -m conntrack --ctstate NEW -j DROP
+
+# *** GEÄNDERT: Erlaube Port 80 zur External_FW IP (172.168.3.2) ***
+iptables -A FORWARD -i eth1 -o eth2 -d 172.168.3.2 -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+
+# Alle anderen NEW Verbindungen zur DMZ blockieren (außer über die Firewall-IP)
+iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.0/24 -m conntrack --ctstate NEW -j DROP
 
 # Ensure routes for lab networks (so router-internet knows how to reach DMZ/Internal)
 # next-hop is router-edge (172.168.2.2)
