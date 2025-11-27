@@ -110,8 +110,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 INSERT INTO users (username, password) VALUES
-('admin', 'password123'),
-('user', 'mypassword')
+('admin', '!T$zrpCGE0J8IQ@QuGVn98zccKF@gYkerOVEM!iX0Zijid1K&exDH^rj2zUbeFjsRU3NLunlk#4UEzu9nZFaIV$JF%Rk*IuyrMBI3$yy%hnEa1qkc*UaxGGO#cKJLE5t'),
+('user', 'kbn*StPrJrCIsFo1a3lY@3Dy#xjZAP!b3vMieGPJNHO*KVh@GupGJH@yjlG2hW3Jw8YY7f715Yl7tyq2LeAv0Uy@EGccs15zviI&8dkklSjnTtexEE$X&0^w*Sgkg#jL')
 ON CONFLICT (username) DO NOTHING;
 
 -- Table for storing reports
