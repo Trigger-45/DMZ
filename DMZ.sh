@@ -151,7 +151,7 @@ EOF
 log_ok "Database initialization SQL created."
 
 # Create Webserver
-log_step "2/3" "Creating Webserver Flask app and Dockerfile..."
+log_step "2/4" "Creating Webserver Flask app and Dockerfile..."
 
 log_info "Creating start.sh script..."
 cat << 'EOF' > ./webserver-details/start.sh
@@ -429,9 +429,101 @@ CMD ["/app/start.sh"]
 EOF
 log_ok "Dockerfile created."
 
+log_step "3/4" "Creating Suricata configuration..."
 
-log_step "3/3" "Creating Logstash configuration..."
+# Create Suricata directories
+mkdir -p ./suricata/rules
+mkdir -p ./suricata/logs
+
+log_info "Creating Suricata configuration..."
+cat << 'EOF' > ./suricata/suricata.yaml
+%YAML 1.1
+---
+
+vars:
+  address-groups:
+    HOME_NET: "[192.168.10.0/24,10.0.2.0/24,10.0.3.0/24]"
+    EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+
+  port-groups:
+    HTTP_PORTS: "80"
+    SHELLCODE_PORTS: "!80"
+    SSH_PORTS: "22"
+
+default-log-dir: /var/log/suricata/
+
+stats:
+  enabled: yes
+  interval: 8
+
+outputs:
+  - fast:
+      enabled: yes
+      filename: fast.log
+      append: yes
+
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert:
+            tagged-packets: yes
+        - http:
+            extended: yes
+        - dns
+        - tls:
+            extended: yes
+        - files:
+            force-magic: no
+        - smtp
+        - flow
+        - netflow
+        - stats:
+            totals: yes
+            threads: no
+
+af-packet:
+  - interface: eth1
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+
+pcap:
+  - interface: eth1
+
+default-rule-path: /var/lib/suricata/rules
+
+rule-files:
+  - suricata.rules
+
+classification-file: /etc/suricata/classification.config
+reference-config-file: /etc/suricata/reference.config
+EOF
+
+log_info "Creating basic Suricata rules..."
+cat << 'EOF' > ./suricata/rules/local.rules
+# Alert on SQL injection attempts
+alert http any any -> $HOME_NET $HTTP_PORTS (msg:"ET WEB_SERVER Possible SQL Injection Attempt"; flow:established,to_server; content:"UNION"; nocase; content:"SELECT"; nocase; sid:1000001; rev:1;)
+
+# Alert on SSH brute force
+alert tcp any any -> $HOME_NET $SSH_PORTS (msg:"ET SCAN Potential SSH Brute Force"; flow:to_server; flags:S; threshold:type both, track by_src, count 5, seconds 60; sid:1000002; rev:1;)
+
+# Alert on port scanning
+alert tcp any any -> $HOME_NET any (msg:"ET SCAN Potential Port Scan"; flags:S; threshold:type both, track by_src, count 20, seconds 60; sid:1000003; rev:1;)
+
+# Alert on ICMP flood
+alert icmp any any -> $HOME_NET any (msg:"ET DOS ICMP Flood"; threshold:type both, track by_src, count 100, seconds 10; sid:1000004; rev:1;)
+EOF
+
+log_ok "Suricata configuration created."
+
 # Main Logstash configuration
+log_step "4/4" "Creating Logstash configuration..."
 log_info "Creating Logstash main configuration..."
 cat << 'EOF' > ./logstash/config/logstash.yml
 path.config: /usr/share/logstash/pipeline/*.conf
@@ -579,7 +671,11 @@ topology:
       kind: linux
       image: jasonish/suricata:latest
       group: IDS
-      cmd: suricata -i eth1 -i eth2 --af-packet
+      binds:
+        - ./suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
+        - ./suricata/rules:/var/lib/suricata/rules:ro
+        - ./suricata/logs:/var/log/suricata:rw
+      cmd: suricata -i eth1 --af-packet
       cap-add:
         - NET_ADMIN
         - NET_RAW
@@ -588,7 +684,11 @@ topology:
       kind: linux
       image: jasonish/suricata:latest
       group: IDS
-      cmd: suricata -i eth1 -i eth2 --af-packet
+      binds:
+        - ./suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
+        - ./suricata/rules:/var/lib/suricata/rules:ro
+        - ./suricata/logs:/var/log/suricata:rw
+      cmd: suricata -i eth1 --af-packet
       cap-add:
         - NET_ADMIN
         - NET_RAW
