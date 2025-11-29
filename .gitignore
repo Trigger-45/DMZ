@@ -1,0 +1,6 @@
+# Ignore everything
+*
+
+# But not DMZ.sh
+!DMZ.sh
+!.gitignore
