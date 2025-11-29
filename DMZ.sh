@@ -580,7 +580,6 @@ log_ok "Webserver-waf-proxy Docker image built."
 # =========================
 # SECTION 4: Deploy Containerlab Topology and Configure Nodes
 # =========================
-log_section "SECTION 4: Deploy Containerlab Topology and Configure Nodes"
 
 # Create topology file
 log_section "SECTION 4: Deploy Containerlab Topology and Configure Nodes"
@@ -593,6 +592,10 @@ mgmt:
   network: mgmt-net
   ipv4-subnet: 172.20.20.0/24
 topology:
+    fi
+    exit 1
+fi
+
   nodes:
     # --- Interne Hosts ---
     Internal_Switch:
@@ -777,6 +780,9 @@ topology:
     - endpoints: ["Web_Proxy_WAF:eth1", "DMZ_Switch:eth3"]
     - endpoints: ["Database:eth1", "Web_Proxy_WAF:eth2"]
     - endpoints: ["IDS:eth1", "DMZ_Switch:eth4"]
+    - endpoints: ["IDS:eth2", "SIEM_FW:eth7"]
+    - endpoints: ["IDS2:eth1", "Internal_Switch:eth4"]
+    - endpoints: ["IDS2:eth2", "SIEM_FW:eth8"]
     - endpoints: ["SIEM_FW:eth1", "Internal_FW:eth4"]
     - endpoints: ["SIEM_FW:eth2", "External_FW:eth3"]
     - endpoints: ["SIEM_FW:eth3", "logstash:eth1"]
@@ -785,7 +791,6 @@ topology:
     - endpoints: ["Attacker:eth1", "router-internet:eth1"]
     - endpoints: ["router-internet:eth2", "router-edge:eth1"]
     - endpoints: ["router-edge:eth2", "External_FW:eth2"]
-    - endpoints: ["IDS2:eth1", "Internal_Switch:eth4"]
     - endpoints: ["SIEM_FW:eth4", "elasticsearch:eth3"]
     - endpoints: ["SIEM_FW:eth5", "kibana:eth2"]
     - endpoints: ["Admin_PC:eth1", "SIEM_FW:eth6"]
@@ -816,10 +821,10 @@ echo ""
 log_ok "Elasticsearch cluster reports green"
 
 # =========================
-# SECTION 6: Configure Internal and External Firewall
+# SECTION 6: Configure Internal and External Firewall and IDS
 # =========================
-log_section "SECTION 6: Configure Internal and External Firewall"
-log_step "1/2" "Configuring Internal Firewall..."
+log_section "SECTION 6: Configure Internal and External Firewall and IDS"
+log_step "1/4" "Configuring Internal Firewall..."
 log_info "Configuring Internal Firewall"
 sudo docker exec -i clab-MaJuVi-Internal_FW bash <<'EOF'
 set -e
@@ -1166,7 +1171,7 @@ EOF
 
 log_ok "Internal Firewall configured"
 
-log_step "2/2" "Configuring External Firewall..."
+log_step "2/4" "Configuring External Firewall..."
 log_info "Configuring External Firewall"
 sudo docker exec -i clab-MaJuVi-External_FW bash <<'EOF'
 set -e
@@ -1553,12 +1558,116 @@ echo "=========================================="
 EOF
 log_ok "External Firewall configured"
 
-log_ok "Configuration of Firewalls completed"
+log_step "3/4" "Configuring Internal IDS..."
+log_info "Configuring Internal IDS"
+
+curl -L -o /tmp/filebeat-8.10.0-x86_64.rpm https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.10.0-x86_64.rpm
+docker cp /tmp/filebeat-8.10.0-x86_64.rpm clab-MaJuVi-IDS2:/tmp/filebeat.rpm
+sudo docker exec -i clab-MaJuVi-IDS2 bash <<'EOF'
+set -e
+
+# Install filebeat
+echo "[1/3] Installing filebeat..."
+
+cd /tmp
+rpm -ivh filebeat.rpm
+
+echo "[OK] Packages installed"
+
+# Configure Filebeat
+echo "[2/3] configure Filebeat..."
+cat > /etc/filebeat/filebeat.yml << 'FILEBEAT_CONFIG'
+filebeat modules enable suricata
+filebeat.inputs:
+- type: logoD IDS...
+  enabled: true
+  paths:
+    - /var/log/suricata/eve.json
+  fields:
+    ids: internal
+    log_type: ids
+  fields_under_root: true
+
+output.logstash:
+  hosts: ["10.0.3.10:5044"]
+
+path.data: /var/lib/filebeat
+logging.level: info
+FILEBEAT_CONFIG
+
+# Start Filebeat
+nohup filebeat -e -c /etc/filebeat/filebeat.yml > /var/log/filebeat.log 2>&1 &
+FILEBEAT_PID=$!
+sleep 2
+
+echo "[3/3] setting ip"
+ip addr add 10.0.2.10/24 dev eth1 || true
+ip link set eth1 up
+ip route replace default via 192.168.10.42 || true
+
+echo ""
+echo "=========================================="
+
+EOF
+log_ok "Internal IDS configured"
+
+log_step "4/4" "Configuring DMZ IDS..."
+log_info "Configuring DMZ IDS"
+
+docker cp /tmp/filebeat-8.10.0-x86_64.rpm clab-MaJuVi-IDS:/tmp/filebeat.rpm
+sudo docker exec -i clab-MaJuVi-IDS bash <<'EOF'
+set -e
+  
+# Install filebeat
+echo "[1/3] Installing filebeat..."
+
+cd /tmp
+rpm -ivh filebeat.rpm
+
+echo "[OK] Packages installed"
+
+# Configure Filebeat
+echo "[2/3] configure Filebeat..."
+cat > /etc/filebeat/filebeat.yml << 'FILEBEAT_CONFIG'
+filebeat modules enable suricata
+filebeat.inputs:
+- type: logo
+  enabled: true
+  paths:
+    - /var/log/suricata/eve.json
+  fields:
+    ids: internal
+    log_type: ids
+  fields_under_root: true
+
+output.logstash:
+  hosts: ["10.0.3.10:5044"]
+
+path.data: /var/lib/filebeat
+logging.level: info
+FILEBEAT_CONFIG
+
+# Start Filebeat
+nohup filebeat -e -c /etc/filebeat/filebeat.yml > /var/log/filebeat.log 2>&1 &
+FILEBEAT_PID=$!
+sleep 2
+
+echo "[3/3] setting ip"
+ip addr add 10.0.2.20/24 dev eth1 || true
+ip link set eth1 up
+ip route replace default via 10.0.2.42 || true
+
+echo ""
+echo "=========================================="
+
+EOF
+log_ok "DMZ IDS configured"
+
+log_ok "Configuration of Firewalls and IDS completed"
 
 # =========================
 # SECTION 7: Configuring Internal Hosts and Switches
 # =========================
-log_section "SECTION 7: Configuring Internal Hosts and Switches..."
 
 # Internal Clients (IP + default route)
 log_section "SECTION 7: Configuring Internal Hosts and Switches..."
@@ -1600,6 +1709,14 @@ ip link set br0 up
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth3 up
+ip link set eth4 up
+tc qdisc add dev eth1 ingress
+tc filter add dev eth1 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
+tc qdisc add dev eth2 ingress
+tc filter add dev eth2 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
+tc qdisc add dev eth3 ingress
+tc filter add dev eth3 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
+
 EOF
 
 log_ok "Internal Switch configured"
@@ -1610,7 +1727,6 @@ log_ok "Internal Hosts and Switches configured"
 # =========================
 # SECTION 8: Configuring DMZ
 # =========================
-log_section "SECTION 8: Configuring DMZ..."
 
 # DMZ Switch config
 log_section "SECTION 8: Configuring DMZ..."
@@ -1625,12 +1741,18 @@ ip link add name br0 type bridge 2>/dev/null || true
 ip link set eth1 master br0 2>/dev/null || true
 ip link set eth2 master br0 2>/dev/null || true
 ip link set eth3 master br0 2>/dev/null || true
-#ip link set eth4 master br0 2>/dev/null || true
+ip link set eth4 master br0 2>/dev/null || true
 ip link set br0 up
 ip link set eth1 up
 ip link set eth2 up
 ip link set eth3 up
-#ip link set eth4 up
+ip link set eth4 up
+tc qdisc add dev eth1 ingress
+tc filter add dev eth1 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
+tc qdisc add dev eth2 ingress
+tc filter add dev eth2 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
+tc qdisc add dev eth3 ingress
+tc filter add dev eth3 parent ffff: protocol all u32 match u32 0 0 action mirred egress mirror dev eth4
 EOF
 
 log_ok "DMZ Switch configured"
@@ -1720,9 +1842,7 @@ log_ok "router-edge configured"
 
 # =========================
 # SECTION 10: Configuring Attacker and router-internet
-# =========================
-log_section "SECTION 10: Configuring Attacker and router-internet..."
-log_step "1/2" "Configuring Attacker..."
+# =========================#
 
 # Attacker host config
 log_section "SECTION 10: Configuring Attacker and router-internet..."
@@ -1741,7 +1861,6 @@ EOF
 
 log_ok "Attacker configured"
 
-# Router-Internet configuration
 # Router-Internet configuration
 log_step "2/2" "Configuring router-internet..."
 log_info "Configuring router-internet"
@@ -1855,6 +1974,7 @@ iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.18 -p tcp --dport 5601 -m conntrack -
 # 2.  Admin_PC → Elasticsearch (Port 9200)
 iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.14 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -s 10.0.3.22 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+
 # 3.  Firewall-Filebeats → Logstash (Port 5044)
 iptables -A FORWARD -s 10.0.3.2 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -s 10.0.3.6 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
@@ -1865,10 +1985,15 @@ iptables -A FORWARD -s 10.0.3.10 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack -
 # 5. Kibana → Elasticsearch (Port 9200)
 iptables -A FORWARD -s 10.0.3.30 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -s 10.0.3.18 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
-# 6.  Established/Related connections
+
+# 6. IDS → Logstash (Port 5044)
+iptables -A FORWARD -s 10.0.2.42 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s 192.168.10.42 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+
+# 7.  Established/Related connections
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# 7. Log dropped packets
+# 8. Log dropped packets
 iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "[SIEM_FW-DROP] " --log-level 7
 
 echo "SIEM_FW configured with restrictive micro-segmentation rules"
