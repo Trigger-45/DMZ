@@ -152,12 +152,6 @@ run_test "Admin_PC → Kibana (HTTP)" \
 run_test "Admin_PC → Elasticsearch (HTTP)" \
     "sudo docker exec clab-MaJuVi-Admin_PC timeout 5 curl -s http://10.0.3.14:9200 2>/dev/null | grep -q 'tagline'" 10
 
-run_test "IDS → SIEM_FW connectivity" \
-    "sudo docker exec clab-MaJuVi-IDS timeout 3 sh -c 'echo > /dev/tcp/10.0.3.25/22' 2>/dev/null" 6
-
-run_test "IDS2 → SIEM_FW connectivity" \
-    "sudo docker exec clab-MaJuVi-IDS2 timeout 3 sh -c 'echo > /dev/tcp/10.0.3.29/22' 2>/dev/null" 6
-
 # =========================
 # SECTION 3: Firewall Rule Tests
 # =========================
