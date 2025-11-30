@@ -261,7 +261,7 @@ app = Flask(__name__)
 app.secret_key = "your-secret-key"  # needed for session management
 
 # DB connection details - use environment variables or defaults
-DB_HOST = os.getenv('DB_HOST', 'Database')
+DB_HOST = os.getenv('DB_HOST', '10.0.2.10')
 DB_NAME = os.getenv('DB_NAME', 'mydatabase')
 DB_USER = os.getenv('DB_USER', 'admin_use')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'strongpassword')
@@ -1898,15 +1898,14 @@ set -e
 apk add --no-cache iproute2 iputils tcpdump >/dev/null 2>&1 || true
 
 ip addr add 10.0.2.30/24 dev eth1 || true
+ip addr add 10.0.2.60/24 dev eth2 || true
 ip link set eth1 up
+ip link set eth2 up
 
-# Route for internal network via Internal_FW
-# Route for internal network via Internal_FW
+# IP-Route 
 ip route add 192.168.10.0/24 via 10.0.2.1 dev eth1 || true
-
-# Default Route (Internet) via External_FW
-# Default Route (Internet) via External_FW
 ip route replace default via 10.0.2.2 || true
+ip route add 10.0.2.10 via 10.0.2.60 dev eth2 || true
 EOF
 
 log_ok "Webserver configured"
