@@ -1,6 +1,7 @@
 @startuml
 ' ============================================================
 ' PlantUML: Unternehmensnetzwerk – angepasst an containerlab Topo
+' Vollständig überarbeitet basierend auf DMZ.sh Skript
 ' ============================================================
 
 skinparam componentStyle rectangle
@@ -10,130 +11,196 @@ skinparam rectangle {
   StereotypeFontColor #222222
 }
 
-actor "Internet Attacker\n(200.168.1.10)" as Attacker
+actor "Internet Attacker\n(200.168.1.10/24)" as Attacker
 
 ' ===================== INTERNET-BEREICH =====================
 package "Internet Zone\n200.168.1.0/24" #FFF2F2 {
-  node Router_Internet as "router-internet\n200.168.1.1\nlink to router-edge: 172.168.2.1/30"
+  node Router_Internet as "router-internet\neth1: 200.168.1.1/24 (Attacker)\neth2: 172.168.2.1/30 (Edge)"
 }
 
-package "Edge Zone\n172.168.2.0/30 / 172.168.3.0/30" #FFE9E9 {
-  node Router_Edge as "router-edge\n172.168.2.2/30 (towards router-internet)\n172.168.3.1/30 (towards External_FW)"
+package "Edge Zone\n172.168.2.0/30 & 172.168.3.0/30" #FFE9E9 {
+  node Router_Edge as "router-edge\neth1: 172.168.2.2/30 (Internet)\neth2: 172.168.3.1/30 (External FW)\n\nDrops: Internal → Attacker direct"
 }
 
 ' ===================== EXTERNE FIREWALL =====================
-package "External Firewall\n(iptables)\n172.168.3.2 / 192.168.20.2 / 10.0.2.2" #F4BFBF {
-  node External_FW as "External Firewall\neth2: 172.168.3.2/30\neth4: 192.168.20.2/24\neth1: 10.0.2.2/24"
+package "External Firewall Zone" #F4BFBF {
+  node External_FW as "External_FW\n(Debian + iptables + ulogd2 + Filebeat)\neth1: 10.0.2.2/24 (DMZ)\neth2: 172.168.3.2/30 (Edge)\neth3: 10.0.3.6/30 (SIEM_FW)\neth4: 192.168.20.2/24 (Internal_FW)\n\nNAT: 172.168.3.5 → 10.0.2.30 (Webserver)\nMASQUERADE: DMZ/Internal → Internet\nLogs → Filebeat → Logstash"
 }
 
 ' ===================== DMZ =====================
 package "DMZ Zone\n10.0.2.0/24" #DFF2D8 {
-  node DMZ_Switch as "DMZ Switch\n(Managed L3 bridge)"
-  node ReverseProxy as "Proxy/WAF\n(Proxy_WAF / NGINX + ModSecurity)\nconnected: eth -> DMZ Switch" #FFF2B8
-  node Webserver as "Webserver\nnginx (Webserver)\n10.0.2.20 (example)" #E8F2F8
-  node Database as "Database\nPostgres / MariaDB\n10.0.2.10 (DB)" #E8F2EA
-  node DMZ_IDS as "IDS (Suricata)\nmirror port" #EFEFEF
+  node DMZ_Switch as "DMZ_Switch\n(FRR Bridge)\neth1-4: mirrored to IDS"
+  
+  node Web_Proxy_WAF as "Web_Proxy_WAF\n(OWASP ModSecurity + NGINX + Flask)\neth1: 10. 0.2.30/24 (DMZ)\neth2: 10.0.2.60/24 (to DB)\nPort 8080 (Flask) → 80 (NGINX)\nExposed: 8181:8080" #FFF2B8
+  
+  node Database as "Database\n(PostgreSQL 16)\neth1: 10.0.2.10/24\nDB: mydatabase\nUsers: admin_use\nExposed: 3636:5432" #E8F2EA
+  
+  node DMZ_IDS as "IDS (Suricata)\neth1: 10.0. 2.20/24 (mirror)\neth2: 10. 0.3.27/30 (SIEM_FW)\nFilebeat → Logstash\nLogs: /var/log/suricata/eve.json" #EFEFEF
 }
 
 ' ===================== INTERNE FIREWALL =====================
-package "Internal Firewall\n(iptables)\n192.168.10.1 / 10.0.2.1 / 192.168.20.1" #F4BFBF {
-  node Internal_FW as "Internal Firewall\neth1: 192.168.10.1/24 (internal)\neth2: 10.0.2.1/24 (DMZ)\neth3: 192.168.20.1/24 (to External_FW)"
+package "Internal Firewall Zone" #F4BFBF {
+  node Internal_FW as "Internal_FW\n(Ubuntu + iptables + ulogd2 + Filebeat)\neth1: 192.168.10.1/24 (Internal)\neth2: 10.0.2.1/24 (DMZ)\neth3: 192.168.20.1/24 (External_FW)\neth4: 10.0.3.2/30 (SIEM_FW)\n\nRules:\n- Internal → Web:80 ALLOW\n- DMZ → Internal BLOCK\nLogs → Filebeat → Logstash"
 }
 
 ' ===================== INTERNES NETZ =====================
-package "Internal Zone\n192.168.10.0/24" #DCEBFF {
-  node Internal_Switch as "Internal Switch\n(bridge)"
-  node Internal_Client1 as "Internal Client 1\n192.168.10.10/24"
-  node Internal_Client2 as "Internal Client 2\n192.168.10.11/24"
-  node Internal_IDS as "IDS (Suricata)\nmirror port" #EFEFEF
+package "Internal Zone\n192.168.10. 0/24" #DCEBFF {
+  node Internal_Switch as "Internal_Switch\n(FRR Bridge)\neth1-3: clients\neth4: mirror to IDS2"
+  
+  node Internal_Client1 as "Internal_Client1\n(Alpine)\neth1: 192.168.10.10/24\nGW: 192.168.10. 1"
+  
+  node Internal_Client2 as "Internal_Client2\n(Alpine)\neth1: 192. 168.10.11/24\nGW: 192.168.10.1"
+  
+  node Internal_IDS as "IDS2 (Suricata)\neth1: 10.0.2.10/24 (mirror)\neth2: 10.0.3.30/30 (SIEM_FW)\nFilebeat → Logstash\nLogs: /var/log/suricata/eve.json" #EFEFEF
 }
 
-' ===================== BACKEND / SIEM =====================
-package "Backend Zone (SIEM)\n10.0.3.0/24" #E9D6FF {
-  node Filebeat as "Filebeat\ncollector"
-  node Elasticsearch as "Elasticsearch\n10.0.3.10"
-  node Kibana as "Kibana\n10.0.3.11"
-  node Admin_PC as "Admin_PC\n10.0.3.100"
+' ===================== SIEM ZONE =====================
+package "SIEM Zone\n10.0.3.0/24" #E9D6FF {
+  node SIEM_FW as "SIEM_FW\n(Ubuntu + iptables)\neth1: 10.0.3.1/30 (Internal_FW)\neth2: 10.0.3.5/30 (External_FW)\neth3: 10.0.3.9/30 (Logstash)\neth4: 10.0.3.13/30 (ES via eth3)\neth5: 10.0.3.17/30 (Kibana)\neth6: 10.0.3.21/30 (Admin_PC)\neth7: 10.0.3.25/30 (DMZ_IDS)\neth8: 10.0.3. 29/30 (Internal_IDS)\n\nRestrictive Firewall:\n- Admin → Kibana:5601\n- Admin → ES:9200\n- Filebeats → Logstash:5044\n- IDS → Logstash:5044"
+  
+  node Logstash as "Logstash\n(Elastic 9.1.7)\neth1: 10. 0.3.10/30 (SIEM_FW)\neth2: 10.0.3.25/30 (ES)\nPort: 5044\nPipelines: firewall. conf, ids.conf"
+  
+  node Elasticsearch as "Elasticsearch\n(9.2.1)\neth1: 10. 0.3.26/30 (Logstash)\neth2: 10.0.3.29/30 (Kibana)\neth3: 10.0.3.14/30 (SIEM_FW)\nPort: 9200\nExposed: 9200:9200\nIndices: firewall-*, suricata-*"
+  
+  node Kibana as "Kibana\n(9.2.1)\neth1: 10.0.3.30/30 (ES via alt)\neth2: 10. 0.3.18/30 (SIEM_FW)\nPort: 5601\nExposed: 5601:5601\nES: http://10.0.3.26:9200"
+  
+  node Admin_PC as "Admin_PC\n(Alpine)\neth1: 10. 0.3.22/30\nGW: 10.0.3.21\nAccess: Kibana + ES"
 }
-
-' ===================== ROUTER/ATTACKER NODES (labels) =====================
-note right of Router_Internet
-eth1: 200.168.1.1/24 (towards Attacker)
-eth2: 172.168.2.1/30 (towards router-edge)
-end note
-
-note right of Router_Edge
-eth1: 172.168.2.2/30 (towards router-internet)
-eth2: 172.168.3.1/30 (towards External_FW)
-end note
 
 ' ============================================================
 ' Verbindungen (physisch/logisch)
 ' ============================================================
 
-' --- Internet ---
-Attacker --> Router_Internet : Angriff / Traffic aus Internet (200.168.1.0/24)
+' --- Internet to Edge ---
+Attacker --> Router_Internet : Attack Traffic
+Router_Internet <--> Router_Edge : 172.168.2.0/30
 
-' --- Internet Routing ---
-Router_Internet --> Router_Edge : 172.168.2.1/30 <-> 172.168.2.2/30
-Router_Edge <--> External_FW : 172.168.3.1/30 <-> 172.168.3.2/30
+' --- Edge to External Firewall ---
+Router_Edge <--> External_FW : 172.168.3.0/30
 
-' --- DMZ Routing ---
-External_FW --> DMZ_Switch : eth1 (10.0.2.2) → DMZ (10.0.2.0/24)
-ReverseProxy --> DMZ_Switch
-Webserver --> ReverseProxy : backend/proxy link
-Webserver --> Database : Read Only (app → DB 10.0.2.10)
-DMZ_Switch --> DMZ_IDS : Mirror / span port
+' --- External Firewall Connections ---
+External_FW --> DMZ_Switch : eth1 → DMZ (10.0.2.2)
+External_FW --> Internal_FW : eth4 ↔ 192.168.20.0/24
+External_FW --> SIEM_FW : eth3 → 10.0.3.6/30
 
-' --- Interne Firewall ---
-Internal_FW --> DMZ_Switch : Internal FW has route to DMZ (10.0.2.1)
-Internal_FW --> External_FW : link via 192.168.20.1 <-> 192.168.20.2
+' --- DMZ Connections ---
+DMZ_Switch --> Web_Proxy_WAF : eth3
+DMZ_Switch --> DMZ_IDS : eth4 (mirror)
+DMZ_Switch --> External_FW : eth2
+DMZ_Switch --> Internal_FW : to eth2
+Web_Proxy_WAF --> Database : eth2 → 10.0.2. 10:5432
+DMZ_IDS --> SIEM_FW : eth2 → 10.0.3.27/30
 
-' --- Internes Netz ---
-Internal_Client1 --> Internal_Switch
-Internal_Client2 --> Internal_Switch
-Internal_Switch --> Internal_FW
-Internal_IDS --> Internal_Switch : Mirror Port
+' --- Internal Firewall Connections ---
+Internal_FW --> Internal_Switch : eth1 → Internal
+Internal_FW --> DMZ_Switch : eth2 → DMZ
+Internal_FW --> SIEM_FW : eth4 → 10.0.3.2/30
 
-' --- SIEM / Backend ---
-Internal_FW --> Filebeat : logs exported
-External_FW --> Filebeat : logs exported
-DMZ_IDS -- Filebeat : IDS alerts
-Internal_IDS -- Filebeat : IDS alerts
-ReverseProxy -- Filebeat : WAF events / logs
-Filebeat --> Elasticsearch : ship logs
-Elasticsearch --> Kibana
-Elasticsearch -- Admin_PC
-Kibana -- Admin_PC
+' --- Internal Network Connections ---
+Internal_Switch --> Internal_Client1 : eth1
+Internal_Switch --> Internal_Client2 : eth2
+Internal_Switch --> Internal_FW : eth3
+Internal_Switch --> Internal_IDS : eth4 (mirror)
+Internal_IDS --> SIEM_FW : eth2 → 10.0.3.30/30
+
+' --- SIEM Connections ---
+SIEM_FW --> Logstash : eth3 → 10.0.3.9/30
+SIEM_FW --> Elasticsearch : eth4 → 10.0.3.13/30
+SIEM_FW --> Kibana : eth5 → 10.0.3.17/30
+SIEM_FW --> Admin_PC : eth6 → 10.0.3.21/30
+SIEM_FW --> DMZ_IDS : eth7 → 10.0.3.25/30
+SIEM_FW --> Internal_IDS : eth8 → 10.0.3.29/30
+
+Logstash --> Elasticsearch : eth2 → 10.0.3.25/30
+Elasticsearch --> Kibana : eth2 ↔ 10.0.3.29/30
+Admin_PC --> SIEM_FW : Access via 10.0.3.22
+
+' --- Logging Flow (dotted) ---
+Internal_FW .down.> Logstash : Firewall Logs (Filebeat)\nlog_type: firewall\nfirewall: internal
+External_FW .down.> Logstash : Firewall Logs (Filebeat)\nlog_type: firewall\nfirewall: external
+DMZ_IDS .down.> Logstash : IDS Alerts (Filebeat)\nlog_type: ids\nids: dmz
+Internal_IDS .down.> Logstash : IDS Alerts (Filebeat)\nlog_type: ids\nids: internal
+Logstash .down.> Elasticsearch : Indexed Logs\nfirewall-{firewall}-*\nsuricata-{ids}-*
+Elasticsearch .down.> Kibana : Query & Visualization
 
 ' ============================================================
-' Erläuternde Notizen / Regeln
+' Erläuternde Notizen
 ' ============================================================
 
 note top of External_FW
-External FW addresses:
-- DMZ: 10.0.2.2/24
-- Edge: 172.168.3.2/30
-- Link to Internal_FW: 192.168.20.2/24
-
-Wichtige Policies (aus Script übernommen):
-- Internet -> DMZ/Intern: NEW connections from Internet are DROPPED on External_FW.
-- DMZ -> Internal: only RELATED/ESTABLISHED allowed.
-- Internal -> DMZ: NEW allowed.
-- NAT (MASQUERADE) for outgoing traffic (10.0.2.0/24, 192.168.10.0/24) is performed on External_FW.
+**External Firewall Rules:**
+- Internet → Webserver:80 (172.168.3.5 DNAT → 10.0.2.30)
+- Internet → Webserver ICMP (DNAT → 10.0.2.30)
+- Internet → Internal BLOCKED (NEW connections)
+- DMZ → Internet ALLOW (NEW)
+- Internal → Internet ALLOW (NEW via eth4)
+- MASQUERADE für ausgehend
+- NFLOG logging → ulogd2 → Filebeat
+- Blocks: Internal ping forwarding
 end note
 
 note bottom of Internal_FW
-Internal FW addresses:
-- internal: 192.168.10.1/24
-- dmz: 10.0.2.1/24
-- link-to-external-fw: 192.168.20.1/24
+**Internal Firewall Rules:**
+- Internal → Webserver:80 ALLOW
+- Internal → Webserver ICMP ALLOW
+- DMZ → Internal BLOCKED (NEW)
+- Internal → Internet FORWARD
+- NFLOG logging → ulogd2 → Filebeat
+- Routes: DMZ, SIEM, Internet
+end note
 
-Routing & firewall summary:
-- Internal -> DMZ: NEW allowed
-- DMZ -> Internal: only RELATED/ESTABLISHED
-- Internal -> Internet: forwarded via External_FW (no NAT here)
+note right of SIEM_FW
+**SIEM Firewall Rules (Restrictive):**
+✓ Admin_PC → Kibana:5601
+✓ Admin_PC → Elasticsearch:9200
+✓ Firewall Filebeats → Logstash:5044
+✓ Logstash → Elasticsearch:9200
+✓ Kibana → Elasticsearch:9200
+✓ IDS Filebeats → Logstash:5044
+✗ All other traffic DROPPED
+end note
+
+note bottom of Logstash
+**Logstash Pipelines:**
+- firewall.conf: Parses firewall logs (NFLOG)
+- ids. conf: Parses Suricata eve. json (JSON)
+Input: Beats:5044
+Output: Elasticsearch:9200
+Indices: firewall-{firewall}-*, suricata-{ids}-*
+end note
+
+note top of Web_Proxy_WAF
+**Web Application Stack:**
+- NGINX (reverse proxy on port 80)
+- OWASP ModSecurity CRS (WAF)
+- Flask App (backend on port 8080)
+- PostgreSQL backend (10.0.2.10:5432)
+- Login system with user/admin roles
+- Report access control
+end note
+
+note bottom of Database
+**PostgreSQL Database:**
+- Tables: users, reports, user_report_access
+- Users: admin (full access), user (limited)
+- Reports: Sales Summary, Confidential Strategy
+- Read-only access from Webserver
+end note
+
+note right of DMZ_IDS
+**Suricata IDS (DMZ):**
+- Rules: SQL injection, SSH brute force, 
+  port scanning, ICMP flood
+- eve.json → Filebeat
+- Field: ids=dmz, log_type=ids
+end note
+
+note right of Internal_IDS
+**Suricata IDS (Internal):**
+- Same ruleset as DMZ
+- Monitors internal traffic
+- eve.json → Filebeat
+- Field: ids=internal, log_type=ids
 end note
 
 @enduml
-
