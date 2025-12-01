@@ -67,10 +67,6 @@ SIEM_subnet="10.0.3.0/24"
 # SECTION 1: Environment Cleanup
 # =========================
 
-# =========================
-# SECTION 1: Environment Cleanup
-# =========================
-
 log_section "SECTION 1: Environment Cleanup"
 
 log_step "1/8" "Stopping all running MaJuVi containers..."
@@ -207,49 +203,92 @@ log_step "2/4" "Creating Webserver Flask app and Dockerfile..."
 log_info "Creating start.sh script..."
 cat << 'EOF' > ./webserver-details/start.sh
 #!/bin/sh
-# Starting Flask App in the background
-# Starting Flask App in the background
 python3 /app/app.py &
-
-# Starting Nginx in the foreground
-# Starting Nginx in the foreground
+sleep 1
 nginx -g "daemon off;"
 EOF
+log_ok "Start script created."
 
-log_info "Creating Nginx configuration..."
-cat << 'EOF' > ./webserver-details/nginx.conf
-user nginx;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
 
-events {
-    worker_connections 1024;
-}
 
-http {
-    include       /etc/nginx/mime.types;
-    default_type  application/octet-stream;
+cat << 'EOF' > ./webserver-details/modsecurity.conf
 
-    upstream flaskapp {
-        server 127.0.0.1:8080;  # Flask runs locally in the container on 8080
-        server 127.0.0.1:8080;  # Flask runs locally in the container on 8080
-    }
+# Include ModSecurity base configuration from the OWASP CRS image
+Include /opt/owasp-crs/modsecurity.conf
 
-    server {
-        listen 80;
+# Phase 1: REQUEST_HEADERS Analysis
+# SecRule PHASE 1: Analyze HTTP Request Headers
+SecDefaultAction phase:1,log,deny,status:403
 
-        location / {
-            proxy_pass http://flaskapp;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-    }
-}
+# Block attempts to access known backdoors (Phase 1)
+SecRule REQUEST_URI "@beginsWith /cgi/backdoor.php" \
+    "id:1000,phase:1,t:lowercase,deny,msg:'Backdoor access attempt blocked'"
+
+# Block web shells access attempts
+SecRule REQUEST_URI "@beginsWith /cgi/shell.php" \
+    "id:1001,phase:1,t:lowercase,deny,msg:'Web shell access attempt blocked'"
+
+# Phase 2: REQUEST_BODY Analysis  
+# SecRule PHASE 2: Analyze HTTP Request Body for SQL Injection and XSS
+SecDefaultAction phase:2,log,deny,status:403
+
+# SQL Injection Detection: UNION SELECT pattern
+SecRule REQUEST_BODY "@rx (?i)union.*select.*from" \
+    "id:1010,phase:2,deny,msg:'SQL Injection - UNION SELECT detected'"
+
+# XSS Detection in Request Body
+SecRule REQUEST_BODY "@contains <script>" \
+    "id:1011,phase:2,deny,msg:'XSS attack detected in request body'"
+
+# SQL Injection alternative pattern: OR 1=1
+SecRule ARGS "@rx (?i).*'\\s+or\\s+1\\s*=\\s*1" \
+    "id:1012,phase:2,deny,msg:'SQL Injection - OR 1=1 pattern detected'"
+
+# Phase 3: RESPONSE_HEADERS Analysis
+# SecRule PHASE 3: Check security headers
+SecDefaultAction phase:3,log,deny,status:500
+
+# Ensure CORS header is not set to wildcard (insecure)
+SecRule RESPONSE_HEADERS:Access-Control-Allow-Origin "@rx \\*" \
+    "id:2000,phase:3,deny,msg:'Insecure CORS header detected'"
+
+# Phase 4: RESPONSE_BODY Analysis
+# SecRule PHASE 4: Analyze HTTP Response Body for data leakage
+SecDefaultAction phase:4,log,deny,status:500flaskapp
+
+# Detect XSS in response body
+SecRule RESPONSE_BODY "@rx <script.*?>.*?</script>" \
+    "id:3000,phase:4,deny,msg:'Reflected XSS detected in response'"
+
+# Phase 5: LOGGING Configuration
+SecAuditEngine RelevantOnly
+SecAuditLogParts ABIFHZ
+SecAuditLog /var/log/audit/audit.log
+SecAuditLogFormat JSON
+
+# HTTP Flood Protection
+SecRequestBodyLimit 10485760
+SecRequestBodyLimitAction Reject
+
+# Disable ModSecurity version reporting
+SecStatusEngine Off
+
+# Include OWASP CRS setup configuration
+Include /opt/owasp-crs/crs-setup.conf
+
+# Include all OWASP CRS rules
+Include /opt/owasp-crs/rules/*.conf
 EOF
-log_ok "Nginx configuration created."
+
+log_ok "ModSecurity configuration created with lecture-based rules (pages 40-58)"
+
+log_info "Enabling ModSecurity rule engine..."
+cat << 'EOF' >> ./webserver-details/modsecurity.conf
+
+# Enable the ModSecurity rule engine in active mode (not detection-only)
+SecRuleEngine On
+EOF
+log_ok "ModSecurity rule engine enabled (On)"
 
 log_info "Creating Flask app..."
 cat << 'EOF' > ./webserver-details/app.py
@@ -453,12 +492,62 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=5000)
 EOF
 
 log_ok "Flask app created."
 
-log_info "Creating Dockerfile for Webserver with WAF..."
+log_info "Creating nginx.conf"
+cat << 'EOF' > ./webserver-details/nginx.conf
+upstream app_backend {
+  server 127.0.0.1:5000;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+    
+    ssl_certificate /etc/nginx/cert.crt;
+    ssl_certificate_key /etc/nginx/cert.key;
+
+    # Hardening: TLS 1.2/1.3 Only & Strong Ciphers (State of the Art)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
+    ssl_session_cache shared:SSL:10m;
+    
+    # Dual Logging: File (Host) + Stdout (Docker)
+    access_log /var/log/nginx/access.log combined;
+    access_log /proc/1/fd/1 combined;
+    error_log /var/log/nginx/error.log warn;
+    error_log /proc/1/fd/2 warn;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location / {
+        proxy_pass http://app_backend;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+    
+    location /waf-health {
+        access_log off;
+        return 200 "WAF OK";
+    }
+}
+EOF
+log_ok "nginx.conf created."
+
+log_info "Creating Dockerfile for Webserver with ModSecurity WAF..."
 cat << 'EOF' > ./webserver-details/Dockerfile
 FROM owasp/modsecurity-crs:nginx-alpine
 
@@ -466,23 +555,29 @@ USER root
 
 WORKDIR /app
 
-RUN apk add --no-cache python3 py3-flask py3-psycopg2 postgresql-dev libc-dev gcc
+RUN apk add --no-cache python3 py3-flask py3-psycopg2 postgresql-dev libc-dev gcc openssl
 
-COPY nginx.conf /etc/nginx/nginx.conf
+# Generate self-signed SSL certificate
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/nginx/cert.key \
+    -out /etc/nginx/cert.crt \
+    -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+
+# Copy application files
+COPY modsecurity.conf /etc/modsecurity.d/override.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /app/start.sh
 COPY app.py /app/app.py
 
+# Make start script executable
 RUN chmod +x /app/start.sh
 
-EXPOSE 8080
+# Set environment variables for ModSecurity
+ENV MODSEC_RULE_ENGINE=On
 
 CMD ["/app/start.sh"]
 EOF
-log_ok "Dockerfile created."
-
-log_step "3/4" "Creating Suricata configuration..."
-
-# Create Suricata directories
+log_ok "Dockerfile created with BACKEND pointing to Flask app."
 mkdir -p ./suricata/rules
 mkdir -p ./suricata/logs
 
@@ -754,7 +849,7 @@ topology:
       image: webserver-waf-proxy
       group: server
       ports:
-        - "8181:8080"
+        - "8181:5000"
       cap-add:
         - NET_ADMIN
     Database:
@@ -1103,6 +1198,12 @@ iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.30 -p tcp --dport 80 -m conntrack 
   --nflog-prefix "[INT-FW-INTERN-TO-WEB-80] " \
   --nflog-group 0
 iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.30 -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+
+# Internal → DMZ: Allow HTTPS (port 443) to Webserver
+iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.30 -p tcp --dport 443 -m conntrack --ctstate NEW -m limit --limit 10/min -j NFLOG \
+  --nflog-prefix "[INT-FW-INTERN-TO-WEB-443] " \
+  --nflog-group 0
+iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.30 -p tcp --dport 443 -m conntrack --ctstate NEW -j ACCEPT
 
 # Internal → DMZ: Allow ICMP (ping) to Webserver
 iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.30 -p icmp --icmp-type echo-request -m limit --limit 10/min -j NFLOG \
@@ -1834,9 +1935,6 @@ tc filter add dev eth3 parent ffff: protocol all u32 match u32 0 0 action mirred
 
 EOF
 
-log_ok "Internal Switch configured"
-
-echo ""
 log_ok "Internal Hosts and Switches configured"
 
 # =========================
