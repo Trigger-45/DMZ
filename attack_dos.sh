@@ -3,7 +3,7 @@
 cat << 'EOF' > /tmp/dos_attack_simple.py
 #!/usr/bin/env python3
 """
-DoS Attack Script - HTTPS with curl
+DoS Attack Script - SSL with curl
 Target: 172.168.3.5:8443
 """
 
