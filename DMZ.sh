@@ -594,6 +594,7 @@ output {
   }
 }
 EOF
+
 log_ok "Logstash configuration created."
 
 log_step "4/4" "Creating webserver SSL certificates..."
@@ -689,8 +690,9 @@ topology:
       ports:
         - "8080:443"
       env:
-        MODSECURITY_SEC_AUDIT_ENGINE: "On"
-        MODSECURITY_SEC_AUDIT_LOG: "/var/log/modsecurity/audit.log"
+        MODSEC_AUDIT_ENGINE: "On"
+        MODSEC_AUDIT_LOG: "/var/log/audit/audit.log"
+        MODSEC_AUDIT_LOG_TYPE: "Serial"
         BACKEND: "http://10.0.2.10:5000"
         MODSEC_RULE_ENGINE: "On"
         PARANOIA: "2"
@@ -1736,6 +1738,30 @@ apt-get install -y filebeat 2>&1 | tail -10
 
 echo "[OK] Packages installed"
 
+
+# Erstelle Log-Verzeichnisse
+echo "[2/5] Creating log directories..."
+mkdir -p /var/log/audit
+mkdir -p /var/log/modsecurity
+mkdir -p /var/log/filebeat
+chmod 777 /var/log/audit
+chmod 777 /var/log/modsecurity
+
+# Erstelle initiale Log-Datei
+touch /var/log/audit/audit.log
+chmod 666 /var/log/audit/audit.log
+
+echo "[OK] Log directories created"
+
+# Restart nginx/modsecurity um neue Log-Konfiguration zu laden
+echo "[3/5] Restarting nginx to apply logging configuration..."
+if pgrep nginx >/dev/null; then
+    nginx -s reload 2>/dev/null || true
+fi
+sleep 2
+
+echo "[OK] Nginx reloaded"
+
 # Configure Filebeat
 echo "[2/3] configure Filebeat..."
 
@@ -2253,6 +2279,8 @@ iptables -A FORWARD -s 10.0.3.18 -d 10.0.3.26 -p tcp --dport 9200 -m conntrack -
 # 6. IDS → Logstash (Port 5044)
 iptables -A FORWARD -s 10.0.3.38 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
 iptables -A FORWARD -s 10.0.3.30 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+
+iptables -A FORWARD -s 10.0.3.34 -d 10.0.3.10 -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
 
 # 7.  Established/Related connections
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
