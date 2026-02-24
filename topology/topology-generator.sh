@@ -68,6 +68,11 @@ topology:
       kind: linux
       image: ${IMG_SURICATA}
       group: ids
+      binds:
+        - ${SCRIPT_DIR}/config/suricata/suricata.yml:/etc/suricata/suricata.yml:ro
+        - ${SCRIPT_DIR}/config/suricata/rules:/var/lib/suricata/rules:ro
+        - ${SCRIPT_DIR}/config/suricata/logs-dmz:/var/log/suricata:rw
+      cmd: suricata -i eth1 --af-packet
       cap-add:
         - NET_ADMIN
         - NET_RAW
@@ -120,13 +125,18 @@ topology:
       kind: linux
       image: ${IMG_SURICATA}
       group: ids
+      binds:
+        - ${SCRIPT_DIR}/config/suricata/suricata.yml:/etc/suricata/suricata.yml:ro
+        - ${SCRIPT_DIR}/config/suricata/rules:/var/lib/suricata/rules:ro
+        - ${SCRIPT_DIR}/config/suricata/logs-dmz:/var/log/suricata:rw
+      cmd: suricata -i eth1 --af-packet
       cap-add:
         - NET_ADMIN
         - NET_RAW
 
     External_FW:
       kind: linux
-      image: ${IMG_DEBIAN}
+      image: ${IMG_UBUNTU}
       type: host
       group: firewall
       cap-add:
@@ -139,7 +149,7 @@ topology:
     # ==========================================
     SIEM_FW:
       kind: linux
-      image: ${IMG_DEBIAN}
+      image: ${IMG_UBUNTU}
       type: host
       group: firewall
       cap-add:

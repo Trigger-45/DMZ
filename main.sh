@@ -125,10 +125,11 @@ if [ "$FULL_DEPLOY" = true ]; then
     bash "${SCRIPTS_DIR}/configure/firewalls/internal-fw.sh"
     bash "${SCRIPTS_DIR}/configure/firewalls/external-fw.sh"
     bash "${SCRIPTS_DIR}/configure/firewalls/waf.sh"
+    bash "${SCRIPTS_DIR}/configure/firewalls/siem-fw.sh"
 
     # log_info "Configuring IDS..."
-    # bash "${SCRIPTS_DIR}/configure/ids/ids-dmz.sh"
-    # bash "${SCRIPTS_DIR}/configure/ids/ids-internal.sh"
+    bash "${SCRIPTS_DIR}/configure/ids/ids-dmz.sh"
+    bash "${SCRIPTS_DIR}/configure/ids/ids-internal.sh"
 
     log_info "Configuring clients..."
     bash "${SCRIPTS_DIR}/configure/clients/internal-clients.sh"
@@ -153,7 +154,6 @@ if [ "$FULL_DEPLOY" = true ]; then
     bash "${SCRIPTS_DIR}/configure/siem/kibana.sh"
     bash "${SCRIPTS_DIR}/configure/siem/siem-pc.sh"
 
-    bash "${SCRIPTS_DIR}/configure/firewalls/siem-fw.sh"
 
     
     log_section "Full Deployment Complete!"

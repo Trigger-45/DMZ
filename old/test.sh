@@ -104,11 +104,11 @@ run_test "Web_Proxy_WAF running" \
 run_test "Database running" \
     "sudo docker ps --filter 'name=clab-MaJuVi-Database' --format '{{.Names}}' | grep -q 'Database'" 5
 
-run_test "IDS running" \
-    "sudo docker ps --filter 'name=clab-MaJuVi-IDS' --format '{{.Names}}' | grep -q 'clab-MaJuVi-IDS$'" 5
+run_test "DMZ IDS running" \
+    "sudo docker ps --filter 'name=clab-MaJuVi-DMZ_IDS' --format '{{.Names}}' | grep -q 'clab-MaJuVi-DMZ_IDS$'" 5
 
-run_test "IDS2 running" \
-    "sudo docker ps --filter 'name=clab-MaJuVi-IDS2' --format '{{.Names}}' | grep -q 'IDS2'" 5
+run_test "Internal IDS running" \
+    "sudo docker ps --filter 'name=clab-MaJuVi-Internal_IDS' --format '{{.Names}}' | grep -q 'clab-MaJuVi-Internal_IDS$'" 5
 
 run_test "Elasticsearch running" \
     "sudo docker ps --filter 'name=clab-MaJuVi-elasticsearch' --format '{{.Names}}' | grep -q 'elasticsearch'" 5
@@ -215,11 +215,11 @@ run_test "Filebeat running (Internal FW)" \
 run_test "Filebeat running (External FW)" \
     "sudo docker exec clab-MaJuVi-External_FW pgrep -x filebeat >/dev/null 2>&1" 5
 
-run_test "Filebeat running (IDS)" \
-    "sudo docker exec clab-MaJuVi-IDS pgrep -x filebeat >/dev/null 2>&1" 5
+run_test "Filebeat running (DMZ IDS)" \
+    "sudo docker exec clab-MaJuVi-DMZ_IDS pgrep -x filebeat >/dev/null 2>&1" 5
 
-run_test "Filebeat running (IDS2)" \
-    "sudo docker exec clab-MaJuVi-IDS2 pgrep -x filebeat >/dev/null 2>&1" 5
+run_test "Filebeat running (Internal IDS)" \
+    "sudo docker exec clab-MaJuVi-Internal_IDS pgrep -x filebeat >/dev/null 2>&1" 5
 
 run_test "ulogd2 running (Internal FW)" \
     "sudo docker exec clab-MaJuVi-Internal_FW pgrep -x ulogd >/dev/null 2>&1" 5
@@ -227,11 +227,11 @@ run_test "ulogd2 running (Internal FW)" \
 run_test "ulogd2 running (External FW)" \
     "sudo docker exec clab-MaJuVi-External_FW pgrep -x ulogd >/dev/null 2>&1" 5
 
-run_test "Suricata running (IDS)" \
-    "sudo docker exec clab-MaJuVi-IDS pgrep -x Suricata-Main >/dev/null 2>&1" 5
+run_test "Suricata running (DMZ IDS)" \
+    "sudo docker exec clab-MaJuVi-DMZ_IDS pgrep -x Suricata-Main >/dev/null 2>&1" 5
 
-run_test "Suricata running (IDS2)" \
-    "sudo docker exec clab-MaJuVi-IDS2 pgrep -x Suricata-Main >/dev/null 2>&1" 5
+run_test "Suricata running (Internal IDS)" \
+    "sudo docker exec clab-MaJuVi-Internal_IDS pgrep -x Suricata-Main >/dev/null 2>&1" 5
 
 run_test "Logstash → Elasticsearch connection" \
     "sudo docker exec clab-MaJuVi-logstash timeout 5 sh -c 'curl -s http://10.0.3.26:9200 >/dev/null 2>&1'" 8

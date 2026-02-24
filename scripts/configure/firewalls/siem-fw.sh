@@ -36,24 +36,28 @@ sudo docker exec -i \
     -e SIEM_KIBANA_ETH1_IP="${SIEM_KIBANA_ETH1_IP}" \
     -e IDS_DMZ_ETH2_IP="${IDS_DMZ_ETH2_IP}" \
     -e DMZ_WAF_ETH3_IP="${DMZ_WAF_ETH3_IP}" \
- "${SIEM_FW_CONTAINER}" sh <<'EOF'
+ "${SIEM_FW_CONTAINER}" bash <<'EOF'
 set -e
+
 apt-get update -qq 2>&1 | tail -5
 apt-get install -y --no-install-recommends \
-  iptables iproute2 iputils-ping \
-  </dev/null
+		iptables \
+		iproute2 \
+		iputils-ping
+
+echo "[OK] Packages installed"
 
 echo "Configuring SIEM_FW interfaces and routing..."
 
-ip addr add ${SIEM_FW_ETH1_IP} dev eth1 || true
-ip addr add ${SIEM_FW_ETH2_IP} dev eth2 || true
-ip addr add ${SIEM_FW_ETH3_IP} dev eth3 || true
-ip addr add ${SIEM_FW_ETH4_IP} dev eth4 || true
-ip addr add ${SIEM_FW_ETH5_IP} dev eth5 || true
-ip addr add ${SIEM_FW_ETH6_IP} dev eth6 || true
-ip addr add ${SIEM_FW_ETH8_IP} dev eth8 || true
-ip addr add ${SIEM_FW_ETH9_IP} dev eth9 || true
-ip addr add ${SIEM_FW_ETH7_IP} dev eth7 || true
+ip addr add "${SIEM_FW_ETH1_IP}" dev eth1 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH2_IP}" dev eth2 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH3_IP}" dev eth3 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH4_IP}" dev eth4 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH5_IP}" dev eth5 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH6_IP}" dev eth6 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH8_IP}" dev eth8 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH9_IP}" dev eth9 2>/dev/null || true
+ip addr add "${SIEM_FW_ETH7_IP}" dev eth7 2>/dev/null || true
 # Activate Interfaces
 ip link set eth1 up
 ip link set eth2 up
@@ -69,14 +73,16 @@ ip link set eth9 up
 # Activate IP Forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
+echo "[OK] Network configured"
+
 # Disable ICMP redirects
-sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1
-sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null 2>&1 || true
 
 # Disable rp_filter for flexible routing
 # Disable rp_filter for flexible routing
-sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
-sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1 || true
 
 # Flush all rules
 iptables -F
@@ -97,27 +103,27 @@ iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/sec -j ACC
 # FORWARD Chain - Explicit Allow Rules
 
 # 1. Admin_PC → Kibana (Port 5601)
-iptables -A FORWARD -s ${SIEM_PC_ETH1_IP%/*} -d ${SIEM_KIBANA_ETH2_IP%/*} -p tcp --dport 5601 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_PC_ETH1_IP%/*}" -d "${SIEM_KIBANA_ETH2_IP%/*}" -p tcp --dport 5601 -m conntrack --ctstate NEW -j ACCEPT
 
 # 2.  Admin_PC → Elasticsearch (Port 9200)
-iptables -A FORWARD -s ${SIEM_PC_ETH1_IP%/*} -d ${SIEM_ELASTIC_ETH3_IP%/*} -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -s ${SIEM_PC_ETH1_IP%/*} -d ${SIEM_ELASTIC_ETH1_IP%/*} -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_PC_ETH1_IP%/*}" -d "${SIEM_ELASTIC_ETH3_IP%/*}" -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_PC_ETH1_IP%/*}" -d "${SIEM_ELASTIC_ETH1_IP%/*}" -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
 
 # 3.  Firewall-Filebeats → Logstash (Port 5044)
-iptables -A FORWARD -s ${INT_FW_ETH4_IP%/*} -d ${SIEM_LOGSTASH_ETH1_IP%/*} -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -s ${EXT_FW_ETH3_IP%/*} -d ${SIEM_LOGSTASH_ETH1_IP%/*} -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${INT_FW_ETH4_IP%/*}" -d "${SIEM_LOGSTASH_ETH1_IP%/*}" -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${EXT_FW_ETH3_IP%/*}" -d "${SIEM_LOGSTASH_ETH1_IP%/*}" -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
 
 # 4.  Logstash → Elasticsearch (Port 9200)
-iptables -A FORWARD -s ${SIEM_LOGSTASH_ETH1_IP%/*} -d ${SIEM_ELASTIC_ETH1_IP%/*} -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_LOGSTASH_ETH1_IP%/*}" -d "${SIEM_ELASTIC_ETH1_IP%/*}" -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
 
 # 5. Kibana → Elasticsearch (Port 9200)
-iptables -A FORWARD -s ${SIEM_KIBANA_ETH1_IP%/*} -d ${SIEM_ELASTIC_ETH1_IP%/*} -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -s ${SIEM_KIBANA_ETH2_IP%/*} -d ${SIEM_ELASTIC_ETH1_IP%/*} -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_KIBANA_ETH1_IP%/*}" -d "${SIEM_ELASTIC_ETH1_IP%/*}" -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_KIBANA_ETH2_IP%/*}" -d "${SIEM_ELASTIC_ETH1_IP%/*}" -p tcp --dport 9200 -m conntrack --ctstate NEW -j ACCEPT
 
 # 6. IDS → Logstash (Port 5044)
-iptables -A FORWARD -s ${IDS_DMZ_ETH2_IP%/*} -d ${SIEM_LOGSTASH_ETH1_IP%/*} -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -s ${SIEM_KIBANA_ETH1_IP%/*} -d ${SIEM_LOGSTASH_ETH1_IP%/*} -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
-iptables -A FORWARD -s ${DMZ_WAF_ETH3_IP%/*} -d ${SIEM_LOGSTASH_ETH1_IP%/*} -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${IDS_DMZ_ETH2_IP%/*}" -d "${SIEM_LOGSTASH_ETH1_IP%/*}" -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${SIEM_KIBANA_ETH1_IP%/*}" -d "${SIEM_LOGSTASH_ETH1_IP%/*}" -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -s "${DMZ_WAF_ETH3_IP%/*}" -d "${SIEM_LOGSTASH_ETH1_IP%/*}" -p tcp --dport 5044 -m conntrack --ctstate NEW -j ACCEPT
 
 # 7.  Established/Related connections
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
