@@ -91,16 +91,16 @@ echo "[Configuring Filebeat..."
 cat > /etc/filebeat/filebeat.yml << FILEBEAT_CONFIG
 filebeat.inputs:
 - type: log
-	enabled: true
-	paths:
-		- /var/log/audit/audit.log
-	fields:
-		firewall: waf
-		log_type: firewall
-	fields_under_root: true
+  enabled: true
+  paths:
+    - /var/log/firewall/firewall-events.log
+  fields:
+    firewall: waf
+    log_type: firewall
+  fields_under_root: true
 
 output.logstash:
-	hosts: ["${SIEM_LOGSTASH_ETH1_IP%/*}:5044"]
+  hosts: ["${SIEM_LOGSTASH_ETH1_IP%/*}:5044"]
 
 path.data: /var/lib/filebeat
 logging.level: warning
