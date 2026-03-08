@@ -1,0 +1,17 @@
+════════════════════════════════════════════════════════════════════
+SUN_DMZ LAB - TEST SUITE REPORT
+════════════════════════════════════════════════════════════════════
+
+Execution Time: Thu Mar  5 20:45:43 CET 2026
+Lab Name: MaJuVi
+
+Test Summary:
+  Total Tests:     0
+  Passed:          0 (0%)
+  Failed:          0
+  Skipped:         0
+  Warnings:        0
+
+Category Breakdown:
+
+════════════════════════════════════════════════════════════════════

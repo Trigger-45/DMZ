@@ -93,6 +93,10 @@ fi
 log_info "Preparing Docker environment..."
 bash "${SCRIPTS_DIR}/setup/02-docker-prep.sh"
 
+log_info "Generating SSL certificates for webserver..."
+cd "${CONFIG_DIR}" && bash config.sh
+cd "${BASE_DIR}"
+
 log_info "Deploying topology..."
 bash "${SCRIPTS_DIR}/setup/03-deploy-topology.sh"
 

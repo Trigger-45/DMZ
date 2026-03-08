@@ -48,13 +48,16 @@ sudo docker volume ls --filter "name=clab-${LAB_NAME}" -q 2>/dev/null | xargs -r
 sudo docker volume prune -f || true
 log_ok "Volumes removed"
 
-log_step "6/8" "Removing data directories..."
+log_step "6/8" "Removing data directories and generated files..."
 sudo rm -rf "${SCRIPT_DIR}/config/suricata/logs" 2>/dev/null || true
 sudo rm -rf "${SCRIPT_DIR}/config/suricata/logs-dmz" 2>/dev/null || true
 sudo rm -rf "${SCRIPT_DIR}/config/suricata/logs-internal" 2>/dev/null || true
 sudo rm -f "${SCRIPT_DIR}/topology/${TOPO_FILE}" 2>/dev/null || true
 sudo rm -f "${SCRIPT_DIR}/${TOPO_FILE}" 2>/dev/null || true
-log_ok "Data directories removed"
+sudo rm -f "${SCRIPT_DIR}/config/webserver-details/server.crt" 2>/dev/null || true
+sudo rm -f "${SCRIPT_DIR}/config/webserver-details/server.key" 2>/dev/null || true
+sudo rm -f "${SCRIPT_DIR}/filebeat-8.10.0-x86_64.rpm" 2>/dev/null || true
+log_ok "Data directories and generated files removed"
 
 log_step "7/8" "Cleaning up bridge interfaces..."
 BRIDGES=$(ip link show 2>/dev/null | grep "br-" | awk -F': ' '{print $2}' | grep -v "@" || true)
