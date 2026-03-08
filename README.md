@@ -16,7 +16,9 @@
 
 </div>
 
-> 🎓 **University project** — Built as a graded assignment in the field of system administration and network security.
+> 🎓 **Originally a university project** — Initially built as a graded assignment in system administration and network security.  
+> 🚀 **Actively maintained** — Continued development driven by personal interest in security research and hands-on learning.
+
 
 ## 📋 Table of Contents
 
@@ -104,11 +106,11 @@ Perfect for:
                     └───┬───┬───┬─────┘
                         │   │   │
               ┌─────────┘   │   └─────────┐
-        ┌─────┴─────┐ ┌────┴────┐  ┌──────┴──────┐
-        │ Logstash  │ │Elastic- │  │   Kibana    │
-        │  :5044    │ │search   │  │   :5601     │
-        │           │ │ :9200   │  │             │
-        └───────────┘ └─────────┘  └─────────────┘
+        ┌─────┴─────┐  ┌────┴────┐ ┌──────┴──────┐
+        │ Logstash  │  │Elastic- │ │   Kibana    │
+        │  :5044    │  │search   │ │   :5601     │
+        │           │  │ :9200   │ │             │
+        └───────────┘  └─────────┘ └─────────────┘
 ```
 
 ---
