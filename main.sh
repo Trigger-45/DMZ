@@ -108,6 +108,18 @@ if [ "$TOPOLOGY_ONLY" = true ]; then
     exit 0
 fi
 
+log_info "Starting Dozzle for container logs..."
+docker run -d \
+  -p 9999:8080 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  amir20/dozzle
+
+log_info "Waiting for Dozzle to be ready..."
+until curl -s http://localhost:9999/ > /dev/null; do
+    sleep 2
+done
+log_ok "Dozzle is ready at http://localhost:9999"
+
 # =========================
 # Configuration Phase (only if --full)
 # =========================
@@ -137,7 +149,7 @@ if [ "$FULL_DEPLOY" = true ]; then
 
     log_info "Configuring clients..."
     bash "${SCRIPTS_DIR}/configure/clients/internal-clients.sh"
-    # bash "${SCRIPTS_DIR}/configure/clients/attacker.sh"
+    bash "${SCRIPTS_DIR}/configure/clients/attacker.sh"
     
     
     log_info "Configuring network components..."

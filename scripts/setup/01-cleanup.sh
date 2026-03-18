@@ -4,6 +4,8 @@ set -euo pipefail
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+CONTAINER_ID=$(docker ps -q --filter "ancestor=amir20/dozzle")
+
 # Load dependencies
 source "${SCRIPT_DIR}/scripts/lib/logging.sh"
 source "${SCRIPT_DIR}/config/variables.sh"
@@ -36,6 +38,15 @@ log_step "3/8" "Removing all ${LAB_NAME} containers..."
 sudo docker ps -a --filter "name=clab-${LAB_NAME}" -q 2>/dev/null | xargs -r sudo docker rm -f || true
 sudo docker container prune -f || true
 log_ok "All containers removed"
+
+log_step "3.1/8" "Removing Dozzle container (if running)..."
+if [ -n "$CONTAINER_ID" ]; then
+    sudo docker rm -f "$CONTAINER_ID" || true
+    log_ok "Dozzle container removed"
+else
+    log_info "Dozzle container not running"
+fi
+log_ok "Container cleanup complete"
 
 log_step "4/8" "Removing containerlab networks..."
 sudo docker network ls --filter "name=clab-${LAB_NAME}" -q 2>/dev/null | xargs -r sudo docker network rm 2>/dev/null || true
